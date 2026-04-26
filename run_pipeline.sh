@@ -83,6 +83,43 @@ fi
 
 echo "仮想環境の python: ${VENV_PY}"
 
+# 既存 .venv に pip が無い場合（Cloud Shell / Debian 系の venv、--without-pip など）
+_ensure_pip_in_venv() {
+  if "${VENV_PY}" -m pip --version >/dev/null 2>&1; then
+    return 0
+  fi
+  echo "仮想環境に pip がありません。bootstrap します..." >&2
+  if "${VENV_PY}" -m ensurepip --upgrade >/dev/null 2>&1; then
+    return 0
+  fi
+  local _gp
+  _gp="$(mktemp)"
+  if command -v curl >/dev/null 2>&1; then
+    if ! curl -fsSL https://bootstrap.pypa.io/get-pip.py -o "${_gp}"; then
+      rm -f "${_gp}"
+      return 1
+    fi
+  elif command -v wget >/dev/null 2>&1; then
+    if ! wget -qO "${_gp}" https://bootstrap.pypa.io/get-pip.py; then
+      rm -f "${_gp}"
+      return 1
+    fi
+  else
+    rm -f "${_gp}"
+    echo "エラー: pip を入れるには curl または wget が必要です。または rm -rf .venv して python3 -m venv をやり直してください。" >&2
+    return 1
+  fi
+  if ! "${VENV_PY}" "${_gp}"; then
+    rm -f "${_gp}"
+    return 1
+  fi
+  rm -f "${_gp}"
+}
+
+if ! _ensure_pip_in_venv; then
+  exit 1
+fi
+
 # pip も仮想環境の python 経由（PATH に依存しない）
 if ! "${VENV_PY}" -m pip install -q -r requirements.txt; then
   echo "エラー: pip install に失敗しました。" >&2
