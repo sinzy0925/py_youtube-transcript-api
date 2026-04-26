@@ -2,10 +2,10 @@ __pycache__/
 .venv/
 output/
 .env
-.env.*
 .session_data.json
 *.pyc
 *.pyo
 .Python
 pip-log.txt
 pip-delete-this-directory.txt
+batch1.log

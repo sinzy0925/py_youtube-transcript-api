@@ -6,6 +6,9 @@
 #   .venv/Scripts/python.exe または .venv/bin/python を直接使う
 #
 # API キー / メール: リポジトリの .env をシェルに取り込んでから a05 の引数（--skip-email）を決める
+#
+# 実行例: ./run_pipeline.sh 'https://youtu.be/...'
+# nohup あり（Linux / Cloud Shell 等）: batch1.log へ出力しバックグラウンド。nohup なし: フォアグラウンド（エラーにしない）
 
 set -euo pipefail
 
@@ -15,13 +18,17 @@ usage() {
   exit 1
 }
 
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+cd "$ROOT"
+
+# nohup 利用時のログ（リポジトリ直下・固定）
+PIPELINE_LOG="${ROOT}/batch1.log"
+
 if [[ "${#}" -lt 1 ]] || [[ -z "${1:-}" ]]; then
   usage
 fi
 
 VIDEO_REF="$1"
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
-cd "$ROOT"
 
 # 動作する Python を選ぶ（Windows の「python3」が Store スタブで venv 失敗する件は py -3 で回避）
 PYTHON_CMD_ARR=()
@@ -192,4 +199,19 @@ else
 fi
 
 echo "=== パイプライン実行: ${VIDEO_REF} ==="
-exec "${VENV_PY}" "${ARGS[@]}" "${VIDEO_REF}"
+
+_log_dir="$(dirname "${PIPELINE_LOG}")"
+if [[ ! -d "${_log_dir}" ]]; then
+  mkdir -p "${_log_dir}"
+fi
+
+if command -v nohup >/dev/null 2>&1; then
+  echo "nohup バックグラウンド: ログ → ${PIPELINE_LOG}（python -u）" >&2
+  nohup "${VENV_PY}" -u "${ARGS[@]}" "${VIDEO_REF}" >"${PIPELINE_LOG}" 2>&1 &
+  _bg_pid=$!
+  echo "PID ${_bg_pid}  （確認: tail -f ${PIPELINE_LOG}）" >&2
+  exit 0
+fi
+
+echo "注意: nohup がありません。フォアグラウンド実行します（端末を閉じると停止します）。" >&2
+exec "${VENV_PY}" -u "${ARGS[@]}" "${VIDEO_REF}"
