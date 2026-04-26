@@ -1,9 +1,16 @@
-# 【備忘＆紹介】YouTube 字幕取得 → Gemini 要約 → Gmail 一括、Python パイプライン（MIT）
+# 【無料・OSS】YouTube の要約を自分のメールへ届けるアプリをプレゼント！（Cloud Shell / Python / MIT）
 
-> この記事は **Qiita 投稿用** に書いた下書きです。手元のリポジトリと同期しています。  
-> 宣伝: 同内容のオープンソースは **[GitHub: py_youtube-transcript-api](https://github.com/sinzy0925/py_youtube-transcript-api)**（**MIT**）で公開しています。使えそうならスターや issue 歓迎です。
+**まず Cloud Shell を開く:** [https://shell.cloud.google.com/?hl=ja&fromcloudshell=true&show=ide%2Cterminal](https://shell.cloud.google.com/?hl=ja&fromcloudshell=true&show=ide%2Cterminal)  
+（日本語 UI・IDE とターミナルを表示。Google アカウントでログイン後、下の `git clone` を実行できます）
 
-**[Google Cloud Shell](https://cloud.google.com/shell)** を使えば、追加のサーバ契約やローカルへの Python 入れ直しなしで、ブラウザから **無料**（標準の利用クォータ内）の Linux 環境に入れます。次の **1 行でリポジトリを取得**すれば、そこがそのまま作業ディレクトリになります（Git も Cloud Shell に入っていることが多いです）。
+**「長い YouTube、とりあえず要約だけ自分のメールで受け取りたい」**——そんな人向けに、**ストアのアプリではなく `git clone` でもらえるオープンソース（MIT）** としてまとめました。拡張機能なし・Selenium なし。**手元に Python を入れ直さなくても**、[Google Cloud Shell](https://cloud.google.com/shell) のブラウザ環境だけで試せます。シェアやスターで広まればうれしいです。
+
+> この記事は **Qiita 投稿用** の下書きです。手元リポジトリと同期しています。  
+> **本編と同じソース:** **[sinzy0925/py_youtube-transcript-api](https://github.com/sinzy0925/py_youtube-transcript-api)**（**MIT**）— スター・Issue 歓迎です。
+
+※ここでの **「無料」** は、**Cloud Shell の標準クォータ内**や **Gemini / Gmail まわりの各サービスが提供する無料枠**の範囲を指します。要約には **[Google AI Studio](https://aistudio.google.com/)** 等の **Gemini 用 API キー**が別途必要です（枠・課金は公式の条件に従います）。
+
+上記の **Cloud Shell 直リンク**でも、[公式の Cloud Shell 案内](https://cloud.google.com/shell) から入っても同じです。追加のサーバ契約やローカルへの Python 入れ直しなしで、ブラウザから **無料**（標準の利用クォータ内）の Linux 環境に入れます。次の **1 行でリポジトリを取得**すれば、そこがそのまま作業ディレクトリになります（Git も Cloud Shell に入っていることが多いです）。
 
 ```bash
 git clone https://github.com/sinzy0925/py_youtube-transcript-api.git
@@ -78,7 +85,7 @@ URL / video_id
 
 ### Google Cloud Shell で環境を用意する場合（手早い）
 
-Cloud Shell では **次の流れだけ**でも動かせます。`run_pipeline.sh` が **`.venv` と依存パッケージ**まで面倒を見ます。
+ブラウザで [Cloud Shell を開く（日本語・IDE＋ターミナル）](https://shell.cloud.google.com/?hl=ja&fromcloudshell=true&show=ide%2Cterminal) し、ログイン後のターミナルで **次の流れだけ**でも動かせます。`run_pipeline.sh` が **`.venv` と依存パッケージ**まで面倒を見ます。
 
 ```bash
 git clone https://github.com/sinzy0925/py_youtube-transcript-api.git
