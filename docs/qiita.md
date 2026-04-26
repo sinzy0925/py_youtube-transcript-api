@@ -3,6 +3,14 @@
 > この記事は **Qiita 投稿用** に書いた下書きです。手元のリポジトリと同期しています。  
 > 宣伝: 同内容のオープンソースは **[GitHub: py_youtube-transcript-api](https://github.com/sinzy0925/py_youtube-transcript-api)**（**MIT**）で公開しています。使えそうならスターや issue 歓迎です。
 
+**[Google Cloud Shell](https://cloud.google.com/shell)** を使えば、追加のサーバ契約やローカルへの Python 入れ直しなしで、ブラウザから **無料**（標準の利用クォータ内）の Linux 環境に入れます。次の **1 行でリポジトリを取得**すれば、そこがそのまま作業ディレクトリになります（Git も Cloud Shell に入っていることが多いです）。
+
+```bash
+git clone https://github.com/sinzy0925/py_youtube-transcript-api.git
+```
+
+`cd py_youtube-transcript-api` のあと **`.env` を置いて `run_pipeline.sh` を実行**すれば、**仮想環境（`.venv`）の作成**と **`pip install -r requirements.txt`** までスクリプト側でまとめて行うので、**手元の PC に Python を入れ直さなくても**、Cloud Shell 上で **YouTube 動画の字幕取得 → Gemini による要約**までを比較的かんたんに試せます。※要約には **[Google AI Studio](https://aistudio.google.com/)** 等で取得する **Gemini 用 API キー**が別途必要です（無料枠・課金は各サービスの条件に従います）。リポジトリは **[sinzy0925/py_youtube-transcript-api](https://github.com/sinzy0925/py_youtube-transcript-api)**（MIT）です。
+
 ## 要約
 
 **ブラウザ拡張なし・Selenium なし**で、
@@ -68,6 +76,20 @@ URL / video_id
 
 ## セットアップ
 
+### Google Cloud Shell で環境を用意する場合（手早い）
+
+Cloud Shell では **次の流れだけ**でも動かせます。`run_pipeline.sh` が **`.venv` と依存パッケージ**まで面倒を見ます。
+
+```bash
+git clone https://github.com/sinzy0925/py_youtube-transcript-api.git
+cd py_youtube-transcript-api
+# リポジトリ直下に .env を作成（後述の「.env の置き方」）
+chmod +x run_pipeline.sh
+./run_pipeline.sh "https://www.youtube.com/watch?v=動画ID"
+```
+
+### ローカルなど：手動で venv する場合
+
 ```bash
 git clone https://github.com/sinzy0925/py_youtube-transcript-api.git
 cd py_youtube-transcript-api
@@ -85,7 +107,23 @@ pip install -r requirements.txt
 
 リポジトリ**直下**に `.env`（**必ず .gitignore 済み**。コミット禁止）。
 
-### 例（値は仮。実キーに差し替え）
+### 最低限（メール送信まで行う場合）
+
+**要約＋Gmail 送信まで**回すときに、まず揃えたい変数です。値は実物に置き換えてください。
+
+```env
+GOOGLE_API_KEY="あなたのAPIキー"
+TRUTH_ASSESSMENT_GROUNDING=1
+TO_EMAIL="あなたのメルアド"
+GMAIL_USER="送信元のメルアド"
+GMAIL_APP_PASSWORD="送信元のGmailのアプリパスワード"
+```
+
+- **`GMAIL_APP_PASSWORD`** は Google が発行する **[アプリパスワード](https://support.google.com/accounts/answer/185833)**（**16 文字**・スペースなしで記載推奨）。**普段の Gmail ログインパスワードではありません**（2 段階認証を有効にしたうえで「アプリ パスワード」から発行）。
+- 宛先は **`TO_EMAIL`** のほか **`MAIL_TO`** でも可（どちらか一方があれば `run_pipeline.sh` はメール送信ルート）。
+- **メール不要**なら `TO_EMAIL` / `MAIL_TO` は空のまま。`run_pipeline.sh` は自動で `--skip-email`。その場合の最低限は **`GOOGLE_API_KEY`** だけで足ります（`TRUTH_ASSESSMENT_GROUNDING` は省略可・未設定は検索グラウンディング ON 扱い）。
+
+### 例：複数 API キーや別名を使う場合（値は仮。実キーに差し替え）
 
 ```env
 # Gemini（m03 は GOOGLE_API_KEY_1, _2, ... 番号付き推奨）
@@ -98,7 +136,7 @@ MAIL_TO=your.email@gmail.com
 
 # Gmail 送信
 GMAIL_USER=your.gmail.sender@gmail.com
-GMAIL_APP_PASSWORD=xxxx xxxx xxxx xxxx   # スペースなし16文字推奨
+GMAIL_APP_PASSWORD=xxxxxxxxxxxxxxxx   # アプリパスワード（スペースなし16文字推奨）
 
 # 真実度で Google 検索グラウンディング（既定: 利用）
 # TRUTH_ASSESSMENT_GROUNDING=0
@@ -169,15 +207,19 @@ python a01_get_transcript.py "URL" -f vtt
 
 ### 3. Bash ワンショット `run_pipeline.sh`（仮想環境まで）
 
-**Git Bash** / WSL / **Google Cloud Shell** 等で:
+**Git Bash** / WSL / **Google Cloud Shell** 等で。**引数は動画 URL（または video_id）だけ**です。
 
 ```bash
 chmod +x run_pipeline.sh
 ./run_pipeline.sh "https://youtu.be/xxxx?si=...."
 ```
 
-- 同ディレクトリの **`.env` をシェルに展開**してから `a05` を起動するので、**`MAIL_TO` が `.env` だけ**でも **メール送信**ルートに入れます。  
-- `.env` に `MAIL_TO` も `TO_EMAIL` も**無い**場合は、自動で **`--skip-email`**。  
+- 同ディレクトリの **`.env` をシェルに展開**してから `a05` を起動するので、**`MAIL_TO` または `TO_EMAIL` が `.env` だけ**でも **メール送信**ルートに入れます。  
+- `.env` に **`MAIL_TO` も `TO_EMAIL` も無い**場合は、自動で **`--skip-email`**。  
+- **`nohup` がある環境**（Linux / Cloud Shell など）: **`batch1.log`**（リポジトリ直下）へログを取りつつ **`nohup` + `python -u` + バックグラウンド**で実行し、PID を表示して終了。ブラウザを閉じても処理が残りやすいです。進捗は `tail -f batch1.log` などで確認。  
+- **`nohup` が無い環境**: エラーにせず **フォアグラウンド**実行（端末を閉じると停止）。  
+- 仮想環境に **pip が無い**場合は `ensurepip` / `get-pip.py` で **自動ブートストラップ**（外向きネットワークが必要なことがあります）。  
+- **`batch1.log` は `.gitignore` 済み**（コミットされません）。ログ名を変えたい場合は `run_pipeline.sh` の `PIPELINE_LOG` を編集。  
 - Windows では **`py -3`** を優先（Store の空の `python3` スタブで venv が壊れないよう対策）。  
 - 仮想環境は **`.venv/Scripts/python.exe`（Win）or `.venv/bin/python`** を直接呼び、**`activate` に依存しない**実装。
 
@@ -205,6 +247,8 @@ chmod +x run_pipeline.sh
 | 真実度の「検索+JSON」が 400 | 一部モデルはツールと `application/json` 併用不可。`a03` 側で **JSON 単独**等へフォールバック |
 | push が拒否される | 履歴に `.env` 混入。キー**ローテ** + `git filter-repo` 等で履歴掃除、または GitHub 案内の解除フロー（**根本はキー再発行**） |
 | `run_pipeline.sh` がすぐ落ちる | Windows では [python.org](https://www.python.org/downloads/) 版の Python 推奨。`python3` だけの Store スタブに注意 |
+| `No module named pip`（Cloud Shell 等） | スクリプトが `ensurepip` / `get-pip.py` で復旧を試みます。古い `.venv` だけが壊れている場合は `rm -rf .venv` 後に再実行。`curl` / `wget` と外向き HTTP を確認 |
+| バックグラウンド実行のログが見えない | Linux / Cloud Shell では **`batch1.log`** を参照。`nohup` が無い環境ではフォアグラウンドのみ |
 
 ---
 

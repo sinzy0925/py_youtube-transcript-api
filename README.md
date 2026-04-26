@@ -23,6 +23,26 @@ pip install -r requirements.txt
 リポジトリルートに **`.env`** を置き、キー類を記載します。`.env` は **`.gitignore` 済み**（コミットしないでください）。  
 任意で `a05` が `load_dotenv()` するため、プロジェクト直下の `.env` を読みます。`m03_api_key_manager` も同パスの `.env` を参照します。
 
+### `.env` に最低限書くもの（メール送信まで行う場合）
+
+**要約＋Gmail 送信まで**回すときの目安です。値はすべて実物に置き換えてください。
+
+```env
+GOOGLE_API_KEY="あなたのAPIキー"
+TRUTH_ASSESSMENT_GROUNDING=1
+TO_EMAIL="あなたのメルアド"
+GMAIL_USER="送信元のメルアド"
+GMAIL_APP_PASSWORD="送信元のGmailのアプリパスワード"
+```
+
+- **`GOOGLE_API_KEY`**: [Google AI Studio](https://aistudio.google.com/) 等で発行した **Gemini 用 API キー**。
+- **`TRUTH_ASSESSMENT_GROUNDING`**: `1` で真実度（目安）の検索グラウンディングを利用（`0` でオフ。未設定でも既定は ON 扱い）。
+- **`TO_EMAIL`**: 成果物を送る**宛先**。代わりに **`MAIL_TO`** でも可（どちらかがあれば `run_pipeline.sh` はメール送信ルート）。
+- **`GMAIL_USER`**: 送信に使う **Gmail アドレス**（通常は `@gmail.com` まで含む全文）。
+- **`GMAIL_APP_PASSWORD`**: そのアカウントの **[アプリパスワード](https://support.google.com/accounts/answer/185833)**（**16 文字**。2 段階認証有効時に発行。**通常のログインパスワードではない**）。
+
+**メール不要**（字幕・要約ファイルだけ）のときは、`TO_EMAIL` / `MAIL_TO` を空にするか省略し、`python a05_... --skip-email` を使うか、`run_pipeline.sh` だけ使うと自動で `--skip-email` されます。最低限は **`GOOGLE_API_KEY`** です。
+
 ### 主な環境変数（例）
 
 | 用途 | 変数例 |
@@ -52,16 +72,22 @@ python a05_pipeline_youtube_to_email.py --to your@gmail.com "https://www.youtube
 - 成果物は既定で `output/<日時>_<動画ID先頭8文字>/`（`transcript.txt`, `summary.txt`, `subtitle_*.vtt`, `video_info.json` など）
 - その他: `-l` 字幕言語優先（例: `ja en`）, `--prompt-mode`（`brief` / `detailed` / `minutes` / `custom`）, `--skip-truth-assessment`
 
-### `run_pipeline.sh`（Bash: Git Bash / Cloud Shell 等）
+### `run_pipeline.sh`（Bash: Git Bash / WSL / Cloud Shell 等）
 
-仮想環境の作成・`pip`・`a05` 起動までを行い、**同じリポジトリの `.env` をシェルに展開**したうえで、`MAIL_TO` の有無で `--skip-email` を切り替えます。
+仮想環境の作成・依存インストール・`a05` 起動までを行い、**リポジトリ直下の `.env` をシェルに展開**したうえで、`MAIL_TO` / `TO_EMAIL` の有無で `--skip-email` を切り替えます。
 
 ```bash
 chmod +x run_pipeline.sh
 ./run_pipeline.sh "https://youtu.be/xxxx"
 ```
 
-Windows では **`py -3`** を優先して仮想環境を作ります。Python が Store のスタブだけの場合は [python.org](https://www.python.org/downloads/) 版のインストールを推奨します。
+- **引数は YouTube の URL（または video_id）だけ**（`./run_pipeline.sh` と URL のあいだにスペースが必要です）。
+- **Linux / Cloud Shell 等で `nohup` がある場合**: `python -u` で **`batch1.log`**（リポジトリ直下）へ標準出力・標準エラーを書きつつ**バックグラウンド**実行し、PID を表示して終了します。シェルを閉じても処理が残りやすくなります。
+- **`nohup` が無い環境**（一部の Git Bash など）: エラーにはせず、**フォアグラウンド**で実行します（端末を閉じると停止します）。
+- 仮想環境に **pip が無い**場合（Debian 系の `venv` など）は、`ensurepip` または `get-pip.py` で自動的に入れます（外向き HTTP が必要な場合あり）。
+- ログ **`batch1.log` は `.gitignore` 済み**です。別ファイルにしたい場合は `run_pipeline.sh` 内の `PIPELINE_LOG` を編集してください。
+- Windows では **`py -3`** を優先して仮想環境を作ります。Python が Store のスタブだけの場合は [python.org](https://www.python.org/downloads/) 版のインストールを推奨します。
+- 仮想環境の Python は **`.venv/Scripts/python.exe`（Windows）または `.venv/bin/python`（Unix）を直接指定**しており、`activate` は不要です。
 
 ## 使用ライブラリ
 
