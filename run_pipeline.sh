@@ -18,7 +18,17 @@ usage() {
   exit 1
 }
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+# シンボリックリンク経由（例: ~/run_pipeline.sh → リポジトリ内）でもリポジトリルートに cd する
+_script_path="${BASH_SOURCE[0]:-$0}"
+while [[ -L "$_script_path" ]]; do
+  _link_dir="$(cd "$(dirname "$_script_path")" && pwd -P)"
+  _target="$(readlink "$_script_path")"
+  if [[ "$_target" != /* ]]; then
+    _target="${_link_dir}/${_target}"
+  fi
+  _script_path="$_target"
+done
+ROOT="$(cd -P "$(dirname "$_script_path")" && pwd)"
 cd "$ROOT"
 
 # nohup 利用時のログ（リポジトリ直下・固定）
