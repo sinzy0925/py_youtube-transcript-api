@@ -1,0 +1,387 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+a03 — ステップ2: 文字起こしを Gemini で要約し summary.txt へ（単体実行可）
+    真実度は (1) 検索+JSON → (2) JSON のみ → (3) 検索+自由文 → (4) 自由文 の順にフォールバック（JSON はスキーマ厳制）。
+    地政学解説を「架空」と誤レッテルしないよう a02 プロンプトに明示。TRUTH_ASSESSMENT_GROUNDING=0 で検索手順を省く。
+    前: a01 で transcript.txt 作成。a02 のプロンプトを import。次: a04 メール。
+    API キーは m03_api_key_manager（ローテーション・.session_data.json 永続化）を優先利用。
+    モデル列は m03_gemini_model_fallback がある場合のみそちらを使用。
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+from typing import Optional
+
+from google import genai
+from google.genai import types
+
+from a02_summary_prompt_shared import build_prompt, build_truth_assessment_prompt
+
+from m03_api_key_manager import api_key_manager
+
+try:
+    from m03_gemini_model_fallback import get_gemini_model_fallback_chain
+except ImportError:
+    def get_gemini_model_fallback_chain(
+        for_summary: bool = True,
+    ) -> tuple[str, ...]:
+        return (
+            "gemini-3.1-flash-lite-preview",
+            "gemini-3-flash-preview",
+            "gemini-2.5-flash",
+            "gemini-2.5-flash-lite",
+        )
+
+PYTHON_NAME = os.path.basename(__file__)
+
+# 真実度 API の JSON 厳制（プロンプトと揃え、パース失敗を減らす）
+_TRUTH_JSON_SCHEMA: dict = {
+    "type": "object",
+    "properties": {
+        "score_percent": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100,
+        },
+        "reason": {
+            "type": "string",
+        },
+    },
+    "required": ["score_percent", "reason"],
+}
+
+
+def _truth_assessment_grounding_enabled() -> bool:
+    """真実度 API に Google 検索グラウンディング（公開情報の照合）を付ける（既定: 有効）。"""
+    raw = os.getenv("TRUTH_ASSESSMENT_GROUNDING", "1")
+    v = (raw or "1").strip().lower()
+    return v not in ("0", "false", "no", "off")
+
+
+def _pick_api_key() -> Optional[str]:
+    """
+    まず m03 のローテータ（GOOGLE_API_KEY_1,2,... と API_KEY_RANGE 等）から取得。
+    キーが無い／未設定のときは GOOGLE_API_KEY または GOOGLE_API_KEY_n を直接参照。
+    """
+    key = api_key_manager.get_next_key_sync()
+    if key:
+        return key
+    for env_name in (
+        "GOOGLE_API_KEY",
+        "GOOGLE_API_KEY_1",
+        "GOOGLE_API_KEY_2",
+        "GOOGLE_API_KEY_3",
+        "GOOGLE_API_KEY_4",
+        "GOOGLE_API_KEY_5",
+        "GOOGLE_API_KEY_6",
+    ):
+        value = (os.getenv(env_name) or "").strip()
+        if value:
+            return value
+    return None
+
+
+def _should_try_next_api_key(err: BaseException) -> bool:
+    """レート制限等で同一リクエストを別キーに切り替えて再試行するか。"""
+    if api_key_manager.key_count <= 1:
+        return False
+    msg = f"{type(err).__name__}: {err}".lower()
+    return any(
+        part in msg
+        for part in (
+            "429",
+            "resource exhausted",
+            "rate limit",
+            "quota",
+            "too many requests",
+            "503",
+            "unavailable",
+        )
+    )
+
+
+def _extract_json_object(s: str) -> Optional[str]:
+    """先頭以降の最初の { … } 対（文字列内の括弧に配慮）を抜き出す。"""
+    t = s.strip()
+    if not t:
+        return None
+    start = t.find("{")
+    if start < 0:
+        return None
+    depth = 0
+    in_str = False
+    esc = False
+    for i in range(start, len(t)):
+        c = t[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif c == "\\":
+                esc = True
+            elif c == '"':
+                in_str = False
+            continue
+        if c == '"':
+            in_str = True
+        elif c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                return t[start : i + 1]
+    return None
+
+
+def _clean_reason_text(s: str) -> str:
+    """reason 内のよくある Markdown を除去（メール/プレーン向け）。"""
+    t = s.replace("**", "").replace("__", "")
+    t = re.sub(r"`+[^`]*`+", "", t)
+    t = re.sub(r"#{1,6}\s*", "", t)
+    return t.strip()
+
+
+def _parse_truth_json(raw: str) -> tuple[Optional[int], str]:
+    """モデルが返した JSON から score_percent / reason を取り出す。"""
+    t = (raw or "").strip()
+    if t.startswith("```"):
+        t = re.sub(r"^```[a-zA-Z0-9]*\s*\n?", "", t)
+        t = re.sub(r"\n?```\s*$", "", t, flags=re.DOTALL)
+    blobs: list[str] = []
+    for b in (t, _extract_json_object(t) or ""):
+        if b and b not in blobs:
+            blobs.append(b)
+    for blob in blobs:
+        try:
+            data = json.loads(blob)
+            sc = int(data.get("score_percent", data.get("score", -1)))
+            reason = _clean_reason_text(str(data.get("reason", "")).strip())
+            if 0 <= sc <= 100:
+                return sc, reason or "（理由の記載がありません。）"
+        except (json.JSONDecodeError, ValueError, TypeError, KeyError, AttributeError):
+            continue
+    return None, (t[:1500] + ("…" if len(t) > 1500 else "")) if t else "（空の応答）"
+
+
+def _format_truth_block(score: Optional[int], reason: str) -> str:
+    if score is not None:
+        return (
+            f"【この要約の真実度（目安）】 約{score}%\n"
+            f"（根拠のメモ）{reason}\n"
+            f"\n---\n\n"
+        )
+    return (
+        "【この要約の真実度（目安）】 数値化できませんでした（下記は API の生応答抜粋）\n"
+        f"（抜粋）{reason}\n"
+        f"\n---\n\n"
+    )
+
+
+def _truth_strategy_order(want_grounding: bool) -> list[tuple[str, bool, bool]]:
+    """
+    真実度 API の試行順 (label, use_google_search, use_json_schema)。
+    JSON 厳制を先に当て、検索と同時利用が不可なら JSON のみに逃がす。
+    """
+    s: list[tuple[str, bool, bool]] = []
+    if want_grounding:
+        s.append(("真実度[検索+JSON]", True, True))
+    s.append(("真実度[JSONのみ]", False, True))
+    if want_grounding:
+        s.append(("真実度[検索・自由形式]", True, False))
+    s.append(("真実度[自由形式]", False, False))
+    return s
+
+
+def _run_truth_with_strategies(
+    api_key: str,
+    models: tuple[str, ...],
+    t_parts: list,
+    want_grounding: bool,
+) -> tuple[Optional[str], str, Optional[str]]:
+    """
+    戻り値: (生テキスト, 最後の api_key, 成功ラベル or None)
+    パース可能な score が得られるまで戦略を変える。
+    """
+    key = api_key
+    for label, use_gs, use_json in _truth_strategy_order(want_grounding):
+        print(f"{label} で試行 : ({PYTHON_NAME})")
+        raw, key = _gemini_generate_loop(
+            key,
+            models,
+            t_parts,
+            temperature=0.1,
+            max_output_tokens=2048,
+            purpose=label,
+            use_google_search_grounding=use_gs,
+            response_mime_type="application/json" if use_json else None,
+            response_json_schema=_TRUTH_JSON_SCHEMA if use_json else None,
+        )
+        if raw and _parse_truth_json(raw)[0] is not None:
+            return raw, key, label
+        if raw and use_json:
+            print(
+                f"警告: {label} は応答したが JSON 解釈に失敗。次手順へ。 : ({PYTHON_NAME})"
+            )
+    return None, key, None
+
+
+def _gemini_generate_loop(
+    api_key: str,
+    models: tuple[str, ...],
+    parts: list,
+    *,
+    temperature: float,
+    max_output_tokens: int,
+    purpose: str,
+    use_google_search_grounding: bool = False,
+    response_mime_type: Optional[str] = None,
+    response_json_schema: Optional[dict] = None,
+) -> tuple[Optional[str], str]:
+    """Gemini 呼び出し。戻り値: (本文テキスト, 最後に使った api_key)。"""
+    extra_tools: list = []
+    if use_google_search_grounding:
+        try:
+            extra_tools = [types.Tool(google_search=types.GoogleSearch())]
+        except Exception as e:
+            print(
+                f"警告: Google 検索ツールを組み立てられません: {e}。検索なしで続行します。 : ({PYTHON_NAME})"
+            )
+    last_err: Optional[BaseException] = None
+    for idx, model in enumerate(models):
+        attempt = 0
+        while True:
+            try:
+                client = genai.Client(api_key=api_key)
+                gcfg: dict = {
+                    "temperature": temperature,
+                    "max_output_tokens": max_output_tokens,
+                }
+                if extra_tools:
+                    gcfg["tools"] = extra_tools
+                if response_mime_type:
+                    gcfg["response_mime_type"] = response_mime_type
+                if response_json_schema is not None:
+                    gcfg["response_json_schema"] = response_json_schema
+                response = client.models.generate_content(
+                    model=model,
+                    contents=parts,
+                    config=types.GenerateContentConfig(**gcfg),
+                )
+                text = (getattr(response, "text", None) or "").strip()
+                if text:
+                    if idx > 0:
+                        print(
+                            f"{purpose}: フォールバック model={model} で成功 : ({PYTHON_NAME})"
+                        )
+                    return text, api_key
+                print(
+                    f"警告: {purpose} 応答が空（model={model}） : ({PYTHON_NAME})"
+                )
+                break
+            except Exception as e:
+                last_err = e
+                if (
+                    attempt == 0
+                    and _should_try_next_api_key(e)
+                ):
+                    next_key = api_key_manager.get_next_key_sync()
+                    if next_key:
+                        print(
+                            f"{purpose}: キーを切り替えて同じモデルを再試行（{model}）: {e} : ({PYTHON_NAME})"
+                        )
+                        api_key = next_key
+                        attempt = 1
+                        continue
+                print(
+                    f"警告: {purpose} に失敗（model={model}）: {e} : ({PYTHON_NAME})"
+                )
+                break
+        if idx < len(models) - 1:
+            print(
+                f"{purpose}: モデル {model} を打ち切り、次へ切替 : ({PYTHON_NAME})"
+            )
+    if last_err:
+        print(
+            f"警告: 全モデルで {purpose} に失敗: {last_err} : ({PYTHON_NAME})"
+        )
+    return None, api_key
+
+
+def generate_summary_to_file(
+    transcript_text: str,
+    output_path: str,
+    *,
+    prompt_mode: str,
+    prompt_text: str,
+    video_title: str,
+    video_url: str,
+    include_truth_assessment: bool = True,
+) -> bool:
+    """
+    文字起こしを Gemini で要約し output_path へ保存。
+    include_truth_assessment が True のとき、先に要約前の全文で真実度（目安）を 1 回取得し、
+    要約の冒頭に「約◯%」と根拠メモを挿入する（追加の API 呼び出し 1 回）。
+    """
+    if not (transcript_text or "").strip():
+        return False
+    api_key = _pick_api_key()
+    if not api_key:
+        print(f"警告: Gemini APIキーが見つからないため summary.txt をスキップします。 : ({PYTHON_NAME})")
+        return False
+
+    models = get_gemini_model_fallback_chain(for_summary=True)
+    print(f"要約/評価 Gemini モデル試行順: {', '.join(models)} : ({PYTHON_NAME})")
+
+    truth_block = ""
+    if include_truth_assessment:
+        use_search = _truth_assessment_grounding_enabled()
+        if use_search:
+            print(
+                f"真実度（目安）— 検索＋JSON 等、複数手順にフォールバック可 : ({PYTHON_NAME})"
+            )
+        else:
+            print(
+                f"真実度（目安）— TRUTH_ASSESSMENT_GROUNDING=0（検索なし・JSON 優先）: ({PYTHON_NAME})"
+            )
+        t_prompt = build_truth_assessment_prompt(video_title, video_url)
+        t_parts = [t_prompt, "\n\n--- 文字起こし全文 ---\n", transcript_text]
+        t_raw, api_key, _ok_label = _run_truth_with_strategies(
+            api_key, models, t_parts, use_search
+        )
+        if t_raw:
+            sc, rsn = _parse_truth_json(t_raw)
+            truth_block = _format_truth_block(sc, rsn)
+        else:
+            truth_block = (
+                f"【この要約の真実度（目安）】 自動評価に失敗しました\n"
+                f"（要約は続行します。）\n"
+                f"\n---\n\n"
+            )
+
+    prompt = build_prompt(prompt_mode, prompt_text, video_title, video_url)
+    s_parts = [prompt, "\n\n--- 文字起こし本文 ---\n", transcript_text]
+    print(f"要約 : ({PYTHON_NAME})")
+    body, api_key = _gemini_generate_loop(
+        api_key,
+        models,
+        s_parts,
+        temperature=0.2,
+        max_output_tokens=12000,
+        purpose="要約",
+    )
+    if not body:
+        return False
+
+    out = truth_block + body
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write(out)
+    try:
+        api_key_manager.save_session()
+    except Exception as se:
+        print(
+            f"警告: API キーセッションの保存に失敗: {se} : ({PYTHON_NAME})"
+        )
+    return True
