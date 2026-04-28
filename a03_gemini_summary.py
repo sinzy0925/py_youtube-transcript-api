@@ -180,6 +180,24 @@ def _gemini_retry_min_delay_sec() -> int:
         return 0
 
 
+def _truth_json_parse_max_attempts() -> int:
+    """真実度: 同一戦略で『応答あり・JSON 解釈失敗』のときの再試行回数（GEMINI_TRUTH_JSON_PARSE_RETRIES、既定 3、最低 1）。"""
+    try:
+        v = int((os.getenv("GEMINI_TRUTH_JSON_PARSE_RETRIES") or "3").strip())
+        return max(1, v)
+    except ValueError:
+        return 3
+
+
+def _truth_parse_retry_delay_sec() -> float:
+    """真実度 JSON 再試行前の待機秒（GEMINI_TRUTH_PARSE_RETRY_DELAY_SEC、既定 0）。"""
+    try:
+        v = float((os.getenv("GEMINI_TRUTH_PARSE_RETRY_DELAY_SEC") or "0").strip())
+        return max(0.0, v)
+    except ValueError:
+        return 0.0
+
+
 def _extract_json_object(s: str) -> Optional[str]:
     """先頭以降の最初の { … } 対（文字列内の括弧に配慮）を抜き出す。"""
     t = s.strip()
@@ -296,21 +314,33 @@ def _run_truth_with_strategies(
                 json_via_api_schema=use_api_json,
             )
         t_parts = [t_prompt, "\n\n--- 文字起こし全文 ---\n", transcript_text]
-        raw, key, model = _gemini_generate_loop(
-            key,
-            models,
-            t_parts,
-            temperature=0.1,
-            max_output_tokens=2048,
-            purpose=label,
-            use_google_search_grounding=use_gs,
-            response_mime_type="application/json" if use_api_json else None,
-            response_json_schema=_TRUTH_JSON_SCHEMA if use_api_json else None,
-        )
-        if raw:
+        max_parse_tries = _truth_json_parse_max_attempts()
+        parse_retry_delay = _truth_parse_retry_delay_sec()
+        for parse_attempt in range(max_parse_tries):
+            raw, key, model = _gemini_generate_loop(
+                key,
+                models,
+                t_parts,
+                temperature=0.1,
+                max_output_tokens=2048,
+                purpose=label,
+                use_google_search_grounding=use_gs,
+                response_mime_type="application/json" if use_api_json else None,
+                response_json_schema=_TRUTH_JSON_SCHEMA if use_api_json else None,
+            )
+            if not raw:
+                break
             if _parse_truth_json(raw)[0] is not None:
                 return raw, key, label, model
-            if not relaxed:
+            last_attempt = parse_attempt >= max_parse_tries - 1
+            if not last_attempt:
+                print(
+                    f"警告: {label} は応答したが JSON 解釈に失敗。"
+                    f"同一戦略で再試行 ({parse_attempt + 2}/{max_parse_tries}) : ({PYTHON_NAME})"
+                )
+                if parse_retry_delay > 0:
+                    time.sleep(parse_retry_delay)
+            elif not relaxed:
                 print(
                     f"警告: {label} は応答したが JSON 解釈に失敗。次手順へ。 : ({PYTHON_NAME})"
                 )
