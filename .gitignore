@@ -8,4 +8,4 @@ output/
 .Python
 pip-log.txt
 pip-delete-this-directory.txt
-batch1.log
+batch*.log

@@ -8,7 +8,8 @@
 # API キー / メール: リポジトリの .env をシェルに取り込んでから a05 の引数（--skip-email）を決める
 #
 # 実行例: ./run_pipeline.sh 'https://youtu.be/...'
-# nohup あり（Linux / Cloud Shell 等）: batch1.log へ出力しバックグラウンド。nohup なし: フォアグラウンド（エラーにしない）
+# 並列用: ./run_pipeline1.sh URL … ./run_pipeline5.sh URL（batch1.log…batch5.log、c.f. PIPELINE_SLOT）
+# nohup あり（Linux / Cloud Shell 等）: 既定 batch1.log などへ出力しバックグラウンド。nohup なし: フォアグラウンド（エラーにしない）
 
 set -euo pipefail
 
@@ -31,8 +32,14 @@ done
 ROOT="$(cd -P "$(dirname "$_script_path")" && pwd)"
 cd "$ROOT"
 
-# nohup 利用時のログ（リポジトリ直下・固定）
-PIPELINE_LOG="${ROOT}/batch1.log"
+# ログ: 環境変数 PIPELINE_LOG で直指定。PIPELINE_SLOT=1..5 で batch{1..5}.log（並列で log 衝突を避ける）
+if [[ -n "${PIPELINE_LOG:-}" ]]; then
+  :
+elif [[ -n "${PIPELINE_SLOT:-}" ]] && [[ "${PIPELINE_SLOT}" =~ ^[1-5]$ ]]; then
+  PIPELINE_LOG="${ROOT}/batch${PIPELINE_SLOT}.log"
+else
+  PIPELINE_LOG="${ROOT}/batch1.log"
+fi
 
 if [[ "${#}" -lt 1 ]] || [[ -z "${1:-}" ]]; then
   usage
@@ -219,7 +226,8 @@ if command -v nohup >/dev/null 2>&1; then
   echo "nohup バックグラウンド: ログ → ${PIPELINE_LOG}（python -u）" >&2
   nohup "${VENV_PY}" -u "${ARGS[@]}" "${VIDEO_REF}" >"${PIPELINE_LOG}" 2>&1 &
   _bg_pid=$!
-  echo "PID ${_bg_pid}  （確認: tail -f ${PIPELINE_LOG}）" >&2
+  echo "PID ${_bg_pid}  （確認: cat ${PIPELINE_LOG}）" >&2
+  cat ${PIPELINE_LOG}
   exit 0
 fi
 

@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 from typing import Optional
 
 from google import genai
@@ -85,10 +86,8 @@ def _pick_api_key() -> Optional[str]:
     return None
 
 
-def _should_try_next_api_key(err: BaseException) -> bool:
-    """レート制限等で同一リクエストを別キーに切り替えて再試行するか。"""
-    if api_key_manager.key_count <= 1:
-        return False
+def _transient_gemini_error(err: BaseException) -> bool:
+    """レート制限・一時障害など、待機やキー切替えで再試行しうるエラー。"""
     msg = f"{type(err).__name__}: {err}".lower()
     return any(
         part in msg
@@ -102,6 +101,37 @@ def _should_try_next_api_key(err: BaseException) -> bool:
             "unavailable",
         )
     )
+
+
+def _should_try_next_api_key(err: BaseException) -> bool:
+    """複数キーがあるとき、別キーへの切り替えを試すか。"""
+    if api_key_manager.key_count <= 1:
+        return False
+    return _transient_gemini_error(err)
+
+
+def _gemini_max_api_retries() -> int:
+    """同一モデル内の最大試行回数（429 等で指数バックオフまたはキー切替え）。環境変数 GEMINI_MAX_API_RETRIES（既定 5）。"""
+    try:
+        v = int((os.getenv("GEMINI_MAX_API_RETRIES") or "5").strip())
+        return max(1, v)
+    except ValueError:
+        return 5
+
+
+def _is_429_or_503_gemini_error(err: BaseException) -> bool:
+    """429 / 503 を返したときのみ GEMINI_RETRY_MIN_DELAY_SEC を適用する。"""
+    msg = f"{type(err).__name__}: {err}".lower()
+    return "429" in msg or "503" in msg
+
+
+def _gemini_retry_min_delay_sec() -> int:
+    """429/503 の再試行前に最低待つ秒数。GEMINI_RETRY_MIN_DELAY_SEC（未設定・不正時は 0）。"""
+    try:
+        v = int((os.getenv("GEMINI_RETRY_MIN_DELAY_SEC") or "0").strip())
+        return max(0, v)
+    except ValueError:
+        return 0
 
 
 def _extract_json_object(s: str) -> Optional[str]:
@@ -250,9 +280,10 @@ def _gemini_generate_loop(
                 f"警告: Google 検索ツールを組み立てられません: {e}。検索なしで続行します。 : ({PYTHON_NAME})"
             )
     last_err: Optional[BaseException] = None
+    max_attempts = _gemini_max_api_retries()
     for idx, model in enumerate(models):
-        attempt = 0
-        while True:
+        per_try = 0
+        while per_try < max_attempts:
             try:
                 client = genai.Client(api_key=api_key)
                 gcfg: dict = {
@@ -283,22 +314,40 @@ def _gemini_generate_loop(
                 break
             except Exception as e:
                 last_err = e
-                if (
-                    attempt == 0
-                    and _should_try_next_api_key(e)
-                ):
+                per_try += 1
+                if per_try >= max_attempts:
+                    print(
+                        f"警告: {purpose} が {max_attempts} 回失敗（model={model}）: {e} : ({PYTHON_NAME})"
+                    )
+                    break
+                rotated = False
+                if _should_try_next_api_key(e):
                     next_key = api_key_manager.get_next_key_sync()
-                    if next_key:
-                        print(
-                            f"{purpose}: キーを切り替えて同じモデルを再試行（{model}）: {e} : ({PYTHON_NAME})"
-                        )
+                    if next_key and next_key != api_key:
                         api_key = next_key
-                        attempt = 1
-                        continue
-                print(
-                    f"警告: {purpose} に失敗（model={model}）: {e} : ({PYTHON_NAME})"
-                )
-                break
+                        rotated = True
+                        print(
+                            f"{purpose}: キー切替え再試行 ({per_try}/{max_attempts}) model={model}: {e} : ({PYTHON_NAME})"
+                        )
+                        _md = _gemini_retry_min_delay_sec()
+                        if _md > 0 and _is_429_or_503_gemini_error(e):
+                            print(
+                                f"{purpose}: 429/503 再試行前 {_md}s 待機（キー切替え後） : ({PYTHON_NAME})"
+                            )
+                            time.sleep(_md)
+                if not rotated and _transient_gemini_error(e):
+                    exp = min(2 ** (per_try - 1), 45)
+                    _md = _gemini_retry_min_delay_sec() if _is_429_or_503_gemini_error(e) else 0
+                    delay = max(_md, exp) if _md > 0 else exp
+                    print(
+                        f"{purpose}: {delay}s 待機して再試行 ({per_try}/{max_attempts}) model={model}: {e} : ({PYTHON_NAME})"
+                    )
+                    time.sleep(delay)
+                elif not rotated:
+                    print(
+                        f"警告: {purpose} に失敗（model={model}）: {e} : ({PYTHON_NAME})"
+                    )
+                    break
         if idx < len(models) - 1:
             print(
                 f"{purpose}: モデル {model} を打ち切り、次へ切替 : ({PYTHON_NAME})"
