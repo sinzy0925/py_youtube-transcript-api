@@ -61,11 +61,31 @@ def build_prompt(mode: str, custom_prompt: str, video_title: str, video_url: str
     return f"{head}\n{body}"
 
 
-def build_truth_assessment_prompt(video_title: str, video_url: str) -> str:
+def build_truth_assessment_prompt(
+    video_title: str,
+    video_url: str,
+    *,
+    json_via_api_schema: bool = True,
+) -> str:
     """
     要約前の文字起こし全文を渡し、真実性・信頼性の目安（0〜100）を JSON で返させる用。
     Google 検索ツール使用時は、固有名（国・紛争・年・企業等）の公開報道と照合し、誤認（実在を架空扱い等）を避ける。
+
+    json_via_api_schema=True … API の response_mime_type / JSON スキーマで厳制（検索ツールと併用できないモデルあり）。
+    json_via_api_schema=False … 検索と併用時。**プロンプトのみ**で JSON オブジェクト 1 個だけを出力させ、_parse_truth_json で読む。
     """
+    if json_via_api_schema:
+        api_form = (
+            "【API 形式】応答は **JSON オブジェクトそのもの**のみ。マークダウン・太字・箇条書き・前後の説明は禁止\n"
+            "（**システムがスキーマで厳制する**。reason 内もプレーンテキスト、*や#は使わない）。\n"
+        )
+    else:
+        api_form = (
+            "【出力形式（重要）】**Google 検索ツールは利用してよい**が、この呼び出しでは **API 側は JSON を強制しない**。\n"
+            "したがって **応答本文は有効な JSON オブジェクト 1 個だけ** とし、"
+            "**その前後に説明文・挨拶・マークダウン・コードフェンス（```）・注釈を一切付けない**。\n"
+            "プログラムが `json.loads` で解析する。reason はプレーンテキスト（* や # は使わない）。\n"
+        )
     return (
         "【役割】与えられた文字起こし（要約前の全文）について、\n"
         "後段の要約の土台としての『妥当性・信頼性の目安』を採点する。あくまで目安（完璧な事実審判ではない）。\n"
@@ -89,10 +109,9 @@ def build_truth_assessment_prompt(video_title: str, video_url: str) -> str:
         "「仮定を置いたシミュレーション説明」は**小説的虚構**とは別枠で述べ、採点は**構造的一貫性と主張の根拠の明示**で判断する。\n"
         "「架空」**という語は**、文字起こしが**年表・国名の組み合わせ等で公知史実と明確に矛盾**する、"
         "または**純粋なフィクション**と分かる場合に限り使う。多用しない。\n"
-        "【API 形式】応答は **JSON オブジェクトそのもの**のみ。マークダウン・太字・箇条書き・前後の説明は禁止\n"
-        "（システムがスキーマで厳制する。reason 内もプレーンテキスト、*や#は使わない）。\n"
-        f"対象動画タイトル: {video_title}\n"
-        f"対象動画URL: {video_url}\n"
+        + api_form
+        + f"対象動画タイトル: {video_title}\n"
+        + f"対象動画URL: {video_url}\n"
         "以下の区切りの後に続くのは「文字起こし全文（要約前）」です。\n"
         "0〜100 の整数 score_percent（高いほど、**時事解説・分析**として一貫し、"
         "公知の枠組みと**大きく矛盾しない**説明、または不確かさの表明が公平だと判断した場合）。\n"
@@ -101,4 +120,15 @@ def build_truth_assessment_prompt(video_title: str, video_url: str) -> str:
         "地政学解説を不適切に低評価していないか自己チェックする。"
         "あくまで目安を1文。\n"
         '厳密な形式: {"score_percent": <整数>, "reason": "<文字列>"}\n'
+    )
+
+
+def build_truth_assessment_prompt_relaxed(video_title: str, video_url: str) -> str:
+    """検索・自由形式／自由形式用。JSON を本文に含めつつ前後に短い説明が付いてもよい想定で _extract_json_object を利用。"""
+    return (
+        "【役割】文字起こし（要約前全文）の信頼性目安を 0〜100 で付け、根拠を述べる。\n"
+        "可能なら **本文中に 1 か所**、次の形式の JSON のみを含める（コードフェンスは使わない）：\n"
+        '{"score_percent": <0〜100の整数>, "reason": "<日本語で3〜7文>"}\n'
+        "どうしても難しければ、先に簡潔な所感を書き、**最終行を上記 JSON 1 行のみ**にする。\n"
+        f"対象: {video_title} / {video_url}\n"
     )

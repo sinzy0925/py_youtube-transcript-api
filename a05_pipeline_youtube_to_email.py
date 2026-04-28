@@ -22,7 +22,7 @@ import json
 import os
 import sys
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Optional
 
 import requests
 
@@ -41,7 +41,7 @@ if hasattr(sys.stdout, "reconfigure"):
         pass
 
 from a01_get_transcript import save_transcript_artifacts, video_watch_url
-from a03_gemini_summary import generate_summary_to_file
+from a03_gemini_summary import SummaryToFileResult, generate_summary_to_file
 from a04_send_result_email import send_result_email, write_summary_unavailable_placeholder
 
 PYTHON = os.path.basename(__file__)
@@ -70,6 +70,33 @@ def _write_video_info(archive_dir: str, title: str, video_id: str) -> str:
             indent=2,
         )
     return path
+
+
+def _print_pipeline_run_footer(
+    summary_res: SummaryToFileResult,
+    *,
+    skip_email: bool,
+    to_email: str,
+    mail_ok: Optional[bool],
+) -> None:
+    """パイプライン終了直後、要約・真実度・メールの成否を1行ずつ。"""
+    sm = summary_res.summary_model or "—"
+    print(f"[要約]{'成功' if summary_res.ok else '失敗'} モデル：{sm}")
+    if not summary_res.truth_requested:
+        print(f"[真実度]スキップ モデル：—")
+    elif summary_res.truth_strategy_label:
+        st = "成功" if summary_res.truth_ok else "失敗"
+        tm = summary_res.truth_model or "—"
+        print(f"[{summary_res.truth_strategy_label}]{st}　モデル：{tm}")
+    else:
+        st = "成功" if summary_res.truth_ok else "失敗"
+        tm = summary_res.truth_model or "—"
+        print(f"[真実度]{st}　モデル：{tm}")
+    if skip_email:
+        print(f"[メール送信]スキップ (--skip-email) To={to_email!r}")
+    else:
+        ok_m = mail_ok if mail_ok is not None else False
+        print(f"[メール送信]{'成功' if ok_m else '失敗'}　To={to_email!r}")
 
 
 def run_pipeline(
@@ -107,7 +134,7 @@ def run_pipeline(
     # --- (2) 要約: a02+a03 ---
     summary_path = os.path.join(archive_dir, "summary.txt")
     print(f"[2/3] 要約（Gemini）→ {summary_path}")
-    ok = generate_summary_to_file(
+    sum_res = generate_summary_to_file(
         transcript_text,
         summary_path,
         prompt_mode=prompt_mode,
@@ -116,18 +143,30 @@ def run_pipeline(
         video_url=watch_url,
         include_truth_assessment=not skip_truth_assessment,
     )
-    if not ok:
+    if not sum_res.ok:
         write_summary_unavailable_placeholder(archive_dir)
 
     # --- (3) メール: a04 ---
     if skip_email:
         print(f"[3/3] メール送信をスキップ (--skip-email) : ({PYTHON})")
         print(f"=== 完了（成果物は {archive_dir}） : ({PYTHON}) ===")
+        _print_pipeline_run_footer(
+            sum_res,
+            skip_email=True,
+            to_email=to_email,
+            mail_ok=None,
+        )
         return 0
 
     print(f"[3/3] メール送信 To={to_email!r}")
-    send_result_email(archive_dir, to_email, watch_url)
+    mail_ok = send_result_email(archive_dir, to_email, watch_url)
     print(f"=== 完了 : ({PYTHON}) ===")
+    _print_pipeline_run_footer(
+        sum_res,
+        skip_email=False,
+        to_email=to_email,
+        mail_ok=mail_ok,
+    )
     return 0
 
 

@@ -6,7 +6,8 @@ a03 — ステップ2: 文字起こしを Gemini で要約し summary.txt へ（
     地政学解説を「架空」と誤レッテルしないよう a02 プロンプトに明示。TRUTH_ASSESSMENT_GROUNDING=0 で検索手順を省く。
     前: a01 で transcript.txt 作成。a02 のプロンプトを import。次: a04 メール。
     API キーは m03_api_key_manager（ローテーション・.session_data.json 永続化）を優先利用。
-    モデル列は m03_gemini_model_fallback がある場合のみそちらを使用。
+    要約のモデル列は m03_gemini_model_fallback がある場合のみそちらを使用。
+    真実度は Google 検索＋API 都合により gemini-2.5 系のみの列を用いる（要約列と切り離し）。
 """
 
 from __future__ import annotations
@@ -15,29 +16,70 @@ import json
 import os
 import re
 import time
-from typing import Optional
+from typing import NamedTuple, Optional
 
 from google import genai
 from google.genai import types
 
-from a02_summary_prompt_shared import build_prompt, build_truth_assessment_prompt
+from a02_summary_prompt_shared import (
+    build_prompt,
+    build_truth_assessment_prompt,
+    build_truth_assessment_prompt_relaxed,
+)
 
 from m03_api_key_manager import api_key_manager
+
+# 要約: 既定のモデル試行順（m03_gemini_model_fallback 未導入時、または要約専用）
+_DEFAULT_SUMMARY_MODELS: tuple[str, ...] = (
+    "gemini-3.1-flash-lite-preview",
+    "gemini-3-flash-preview",
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+)
+
+# 真実度（検索／JSON 等）: 3.1 / 3 プレビューで環境により失敗しやすいため 2.5 系のみ試行
+_DEFAULT_TRUTH_MODELS: tuple[str, ...] = (
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+)
 
 try:
     from m03_gemini_model_fallback import get_gemini_model_fallback_chain
 except ImportError:
-    def get_gemini_model_fallback_chain(
-        for_summary: bool = True,
-    ) -> tuple[str, ...]:
-        return (
-            "gemini-3.1-flash-lite-preview",
-            "gemini-3-flash-preview",
-            "gemini-2.5-flash",
-            "gemini-2.5-flash-lite",
-        )
+    get_gemini_model_fallback_chain = None  # type: ignore[misc, assignment]
+
+
+def _summary_model_chain() -> tuple[str, ...]:
+    """要約用モデル列。m03 があるときは get_gemini_model_fallback_chain(for_summary=True)、なければ既定4種。"""
+    if get_gemini_model_fallback_chain is not None:
+        chain = get_gemini_model_fallback_chain(for_summary=True)
+        if chain:
+            return chain
+    return _DEFAULT_SUMMARY_MODELS
+
+
+def _truth_model_chain() -> tuple[str, ...]:
+    """真実度用モデル列（要約とは独立。環境変数 GEMINI_TRUTH_MODELS で上書き可・カンマ区切り）。"""
+    raw = (os.getenv("GEMINI_TRUTH_MODELS") or "").strip()
+    if raw:
+        parts = tuple(m.strip() for m in raw.split(",") if m.strip())
+        if parts:
+            return parts
+    return _DEFAULT_TRUTH_MODELS
 
 PYTHON_NAME = os.path.basename(__file__)
+
+
+class SummaryToFileResult(NamedTuple):
+    """generate_summary_to_file の戻り値。パイプライン末尾のサマリ行用。"""
+
+    ok: bool
+    summary_model: Optional[str]
+    truth_requested: bool
+    truth_ok: bool
+    truth_strategy_label: Optional[str]
+    truth_model: Optional[str]
+
 
 # 真実度 API の JSON 厳制（プロンプトと揃え、パース失敗を減らす）
 _TRUTH_JSON_SCHEMA: dict = {
@@ -79,6 +121,10 @@ def _pick_api_key() -> Optional[str]:
         "GOOGLE_API_KEY_4",
         "GOOGLE_API_KEY_5",
         "GOOGLE_API_KEY_6",
+        "GOOGLE_API_KEY_7",
+        "GOOGLE_API_KEY_8",
+        "GOOGLE_API_KEY_9",
+        "GOOGLE_API_KEY_10",
     ):
         value = (os.getenv(env_name) or "").strip()
         if value:
@@ -210,35 +256,47 @@ def _format_truth_block(score: Optional[int], reason: str) -> str:
     )
 
 
-def _truth_strategy_order(want_grounding: bool) -> list[tuple[str, bool, bool]]:
+def _truth_strategy_order(want_grounding: bool) -> list[tuple[str, bool, bool, bool]]:
     """
-    真実度 API の試行順 (label, use_google_search, use_json_schema)。
-    JSON 厳制を先に当て、検索と同時利用が不可なら JSON のみに逃がす。
+    真実度 API の試行順
+    (label, use_google_search, use_api_json_schema, relaxed_prompt)。
+    検索+API-JSON は 400 になりやすいため、先頭は検索+プロンプト JSON のみ（MIME/スキーマなし）。
     """
-    s: list[tuple[str, bool, bool]] = []
+    s: list[tuple[str, bool, bool, bool]] = []
     if want_grounding:
-        s.append(("真実度[検索+JSON]", True, True))
-    s.append(("真実度[JSONのみ]", False, True))
+        s.append(("真実度[検索+プロンプトJSON]", True, False, False))
+    s.append(("真実度[JSONのみ]", False, True, False))
     if want_grounding:
-        s.append(("真実度[検索・自由形式]", True, False))
-    s.append(("真実度[自由形式]", False, False))
+        s.append(("真実度[検索・自由形式]", True, False, True))
+    s.append(("真実度[自由形式]", False, False, True))
     return s
 
 
 def _run_truth_with_strategies(
     api_key: str,
     models: tuple[str, ...],
-    t_parts: list,
+    video_title: str,
+    video_url: str,
+    transcript_text: str,
     want_grounding: bool,
-) -> tuple[Optional[str], str, Optional[str]]:
+) -> tuple[Optional[str], str, Optional[str], Optional[str]]:
     """
-    戻り値: (生テキスト, 最後の api_key, 成功ラベル or None)
+    戻り値: (生テキスト, 最後の api_key, 成功時の戦略ラベル, 成功時のモデル名)
     パース可能な score が得られるまで戦略を変える。
     """
     key = api_key
-    for label, use_gs, use_json in _truth_strategy_order(want_grounding):
+    for label, use_gs, use_api_json, relaxed in _truth_strategy_order(want_grounding):
         print(f"{label} で試行 : ({PYTHON_NAME})")
-        raw, key = _gemini_generate_loop(
+        if relaxed:
+            t_prompt = build_truth_assessment_prompt_relaxed(video_title, video_url)
+        else:
+            t_prompt = build_truth_assessment_prompt(
+                video_title,
+                video_url,
+                json_via_api_schema=use_api_json,
+            )
+        t_parts = [t_prompt, "\n\n--- 文字起こし全文 ---\n", transcript_text]
+        raw, key, model = _gemini_generate_loop(
             key,
             models,
             t_parts,
@@ -246,16 +304,17 @@ def _run_truth_with_strategies(
             max_output_tokens=2048,
             purpose=label,
             use_google_search_grounding=use_gs,
-            response_mime_type="application/json" if use_json else None,
-            response_json_schema=_TRUTH_JSON_SCHEMA if use_json else None,
+            response_mime_type="application/json" if use_api_json else None,
+            response_json_schema=_TRUTH_JSON_SCHEMA if use_api_json else None,
         )
-        if raw and _parse_truth_json(raw)[0] is not None:
-            return raw, key, label
-        if raw and use_json:
-            print(
-                f"警告: {label} は応答したが JSON 解釈に失敗。次手順へ。 : ({PYTHON_NAME})"
-            )
-    return None, key, None
+        if raw:
+            if _parse_truth_json(raw)[0] is not None:
+                return raw, key, label, model
+            if not relaxed:
+                print(
+                    f"警告: {label} は応答したが JSON 解釈に失敗。次手順へ。 : ({PYTHON_NAME})"
+                )
+    return None, key, None, None
 
 
 def _gemini_generate_loop(
@@ -269,8 +328,8 @@ def _gemini_generate_loop(
     use_google_search_grounding: bool = False,
     response_mime_type: Optional[str] = None,
     response_json_schema: Optional[dict] = None,
-) -> tuple[Optional[str], str]:
-    """Gemini 呼び出し。戻り値: (本文テキスト, 最後に使った api_key)。"""
+) -> tuple[Optional[str], str, Optional[str]]:
+    """Gemini 呼び出し。戻り値: (本文テキスト, 最後に使った api_key, 成功時の model 名)。"""
     extra_tools: list = []
     if use_google_search_grounding:
         try:
@@ -307,7 +366,7 @@ def _gemini_generate_loop(
                         print(
                             f"{purpose}: フォールバック model={model} で成功 : ({PYTHON_NAME})"
                         )
-                    return text, api_key
+                    return text, api_key, model
                 print(
                     f"警告: {purpose} 応答が空（model={model}） : ({PYTHON_NAME})"
                 )
@@ -356,7 +415,7 @@ def _gemini_generate_loop(
         print(
             f"警告: 全モデルで {purpose} に失敗: {last_err} : ({PYTHON_NAME})"
         )
-    return None, api_key
+    return None, api_key, None
 
 
 def generate_summary_to_file(
@@ -368,21 +427,33 @@ def generate_summary_to_file(
     video_title: str,
     video_url: str,
     include_truth_assessment: bool = True,
-) -> bool:
+) -> SummaryToFileResult:
     """
     文字起こしを Gemini で要約し output_path へ保存。
-    include_truth_assessment が True のとき、先に要約前の全文で真実度（目安）を 1 回取得し、
-    要約の冒頭に「約◯%」と根拠メモを挿入する（追加の API 呼び出し 1 回）。
+    include_truth_assessment が True のとき、先に要約前の全文で真実度（目安）を取得し、
+    要約の冒頭に「約◯%」と根拠メモを挿入する（真実度は戦略・モデルフォールバックあり）。
+    戻り値は SummaryToFileResult（要約・真実度の成功状況と使用モデル名。パイプライン末尾ログ用）。
     """
+    truth_label: Optional[str] = None
+    truth_model: Optional[str] = None
+    truth_ok = False
+    truth_requested = include_truth_assessment
+
     if not (transcript_text or "").strip():
-        return False
+        return SummaryToFileResult(
+            False, None, include_truth_assessment, False, None, None
+        )
     api_key = _pick_api_key()
     if not api_key:
         print(f"警告: Gemini APIキーが見つからないため summary.txt をスキップします。 : ({PYTHON_NAME})")
-        return False
+        return SummaryToFileResult(
+            False, None, include_truth_assessment, False, None, None
+        )
 
-    models = get_gemini_model_fallback_chain(for_summary=True)
-    print(f"要約/評価 Gemini モデル試行順: {', '.join(models)} : ({PYTHON_NAME})")
+    summary_models = _summary_model_chain()
+    truth_models = _truth_model_chain()
+    print(f"要約 Gemini モデル試行順: {', '.join(summary_models)} : ({PYTHON_NAME})")
+    print(f"真実度 Gemini モデル試行順: {', '.join(truth_models)} : ({PYTHON_NAME})")
 
     truth_block = ""
     if include_truth_assessment:
@@ -395,11 +466,15 @@ def generate_summary_to_file(
             print(
                 f"真実度（目安）— TRUTH_ASSESSMENT_GROUNDING=0（検索なし・JSON 優先）: ({PYTHON_NAME})"
             )
-        t_prompt = build_truth_assessment_prompt(video_title, video_url)
-        t_parts = [t_prompt, "\n\n--- 文字起こし全文 ---\n", transcript_text]
-        t_raw, api_key, _ok_label = _run_truth_with_strategies(
-            api_key, models, t_parts, use_search
+        t_raw, api_key, truth_label, truth_model = _run_truth_with_strategies(
+            api_key,
+            truth_models,
+            video_title,
+            video_url,
+            transcript_text,
+            use_search,
         )
+        truth_ok = bool(t_raw)
         if t_raw:
             sc, rsn = _parse_truth_json(t_raw)
             truth_block = _format_truth_block(sc, rsn)
@@ -413,16 +488,23 @@ def generate_summary_to_file(
     prompt = build_prompt(prompt_mode, prompt_text, video_title, video_url)
     s_parts = [prompt, "\n\n--- 文字起こし本文 ---\n", transcript_text]
     print(f"要約 : ({PYTHON_NAME})")
-    body, api_key = _gemini_generate_loop(
+    body, api_key, summary_model = _gemini_generate_loop(
         api_key,
-        models,
+        summary_models,
         s_parts,
         temperature=0.2,
         max_output_tokens=12000,
         purpose="要約",
     )
     if not body:
-        return False
+        return SummaryToFileResult(
+            ok=False,
+            summary_model=None,
+            truth_requested=truth_requested,
+            truth_ok=truth_ok,
+            truth_strategy_label=truth_label,
+            truth_model=truth_model,
+        )
 
     out = truth_block + body
     with open(output_path, "w", encoding="utf-8") as f:
@@ -433,4 +515,11 @@ def generate_summary_to_file(
         print(
             f"警告: API キーセッションの保存に失敗: {se} : ({PYTHON_NAME})"
         )
-    return True
+    return SummaryToFileResult(
+        ok=True,
+        summary_model=summary_model,
+        truth_requested=truth_requested,
+        truth_ok=truth_ok,
+        truth_strategy_label=truth_label,
+        truth_model=truth_model,
+    )
