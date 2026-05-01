@@ -260,15 +260,23 @@ def _parse_truth_json(raw: str) -> tuple[Optional[int], str]:
     return None, (t[:1500] + ("…" if len(t) > 1500 else "")) if t else "（空の応答）"
 
 
-def _format_truth_block(score: Optional[int], reason: str) -> str:
+def _truth_search_tag(grounding_enabled: bool) -> str:
+    """真実度ブロック行末に付ける。TRUTH_ASSESSMENT_GROUNDING のオン／オフ。"""
+    return f" [GoogleSearch:{'ON' if grounding_enabled else 'OFF'}]"
+
+
+def _format_truth_block(
+    score: Optional[int], reason: str, *, grounding_enabled: bool
+) -> str:
+    tag = _truth_search_tag(grounding_enabled)
     if score is not None:
         return (
-            f"【この要約の真実度（目安）】 約{score}%\n"
+            f"【この要約の真実度（目安）】 約{score}%{tag}\n"
             f"（根拠のメモ）{reason}\n"
             f"\n---\n\n"
         )
     return (
-        "【この要約の真実度（目安）】 数値化できませんでした（下記は API の生応答抜粋）\n"
+        f"【この要約の真実度（目安）】 数値化できませんでした（下記は API の生応答抜粋）{tag}\n"
         f"（抜粋）{reason}\n"
         f"\n---\n\n"
     )
@@ -460,8 +468,9 @@ def generate_summary_to_file(
 ) -> SummaryToFileResult:
     """
     文字起こしを Gemini で要約し output_path へ保存。
+    先頭行にタイトル・URL、その後に（真実度を付ける場合は）「約◯% [GoogleSearch:ON|OFF]」と根拠メモ、本文は要約。
     include_truth_assessment が True のとき、先に要約前の全文で真実度（目安）を取得し、
-    要約の冒頭に「約◯%」と根拠メモを挿入する（真実度は戦略・モデルフォールバックあり）。
+    要約の直前に真実度ブロックを挿入する（真実度は戦略・モデルフォールバックあり）。
     戻り値は SummaryToFileResult（要約・真実度の成功状況と使用モデル名。パイプライン末尾ログ用）。
     """
     truth_label: Optional[str] = None
@@ -507,10 +516,11 @@ def generate_summary_to_file(
         truth_ok = bool(t_raw)
         if t_raw:
             sc, rsn = _parse_truth_json(t_raw)
-            truth_block = _format_truth_block(sc, rsn)
+            truth_block = _format_truth_block(sc, rsn, grounding_enabled=use_search)
         else:
+            tag = _truth_search_tag(use_search)
             truth_block = (
-                f"【この要約の真実度（目安）】 自動評価に失敗しました\n"
+                f"【この要約の真実度（目安）】 自動評価に失敗しました{tag}\n"
                 f"（要約は続行します。）\n"
                 f"\n---\n\n"
             )
@@ -536,7 +546,8 @@ def generate_summary_to_file(
             truth_model=truth_model,
         )
 
-    out = truth_block + body
+    header = f"タイトル：{video_title}\nURL：{video_url}\n\n"
+    out = header + truth_block + body
     with open(output_path, "w", encoding="utf-8") as f:
         f.write(out)
     try:

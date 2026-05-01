@@ -144,7 +144,9 @@ def run_pipeline(
         include_truth_assessment=not skip_truth_assessment,
     )
     if not sum_res.ok:
-        write_summary_unavailable_placeholder(archive_dir)
+        write_summary_unavailable_placeholder(
+            archive_dir, video_title=title, video_url=watch_url
+        )
 
     # --- (3) メール: a04 ---
     if skip_email:

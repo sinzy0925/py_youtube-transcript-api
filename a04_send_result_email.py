@@ -21,7 +21,7 @@ from email import encoders
 PYTHON_NAME = os.path.basename(__file__)
 logger = logging.getLogger(__name__)
 
-# 要約 API が失敗したとき summary.txt に書き、メール本文【要約】にも載せる
+# 要約 API が失敗したとき summary.txt に書き、メール本文は summary.txt の内容と同一にする
 SUMMARY_UNAVAILABLE_BODY = os.getenv(
     "SUMMARY_UNAVAILABLE_BODY",
     "【要約の自動生成は行えませんでした】\n"
@@ -30,24 +30,34 @@ SUMMARY_UNAVAILABLE_BODY = os.getenv(
 ).strip()
 
 
-def write_summary_unavailable_placeholder(archive_dir: str) -> None:
+def write_summary_unavailable_placeholder(
+    archive_dir: str,
+    *,
+    video_title: str = "",
+    video_url: str = "",
+) -> None:
     """要約に失敗した旨を summary.txt に書く。メール送信時に本文・添付に反映される。"""
     path = os.path.join(archive_dir, "summary.txt")
+    header = ""
+    vt = (video_title or "").strip()
+    vu = (video_url or "").strip()
+    if vt or vu:
+        header = f"タイトル：{vt or '（タイトル不明）'}\nURL：{vu}\n\n"
     try:
         with open(path, "w", encoding="utf-8") as f:
-            f.write(SUMMARY_UNAVAILABLE_BODY + "\n")
+            f.write(header + SUMMARY_UNAVAILABLE_BODY + "\n")
         logger.info("要約失敗用の summary.txt を書きました: %s : (%s)", path, PYTHON_NAME)
     except Exception as e:
         logger.warning("summary.txt（要約失敗プレースホルダ）の書き込みに失敗: %s : (%s)", e, PYTHON_NAME)
 
 
 def _read_summary_for_body(summary_path: str) -> str:
-    """summary.txt を UTF-8 で読み、本文用の文字列を返す。"""
+    """summary.txt を UTF-8 で読み、メール本文用の文字列を返す（内容はそのまま）。"""
     if not summary_path or not os.path.isfile(summary_path):
         return ""
     try:
         with open(summary_path, "r", encoding="utf-8") as f:
-            return f.read().strip()
+            return f.read()
     except Exception as e:
         logger.warning("summary.txt の読み込みに失敗しました: %s : (%s)", e, PYTHON_NAME)
     return ""
@@ -85,38 +95,20 @@ def _summary_markdown_to_html_fragment(md_text: str) -> str:
     return md_lib.markdown(md_text, extensions=["extra", "nl2br"])
 
 
-def _build_html_body(title: str, video_url: str, summary_text: str) -> str:
-    """メール本文（HTML）。タイトル・URL はエスケープ、要約は Markdown→HTML。"""
-    safe_title = html.escape(title or "")
-    safe_url = html.escape(video_url or "", quote=True)
-    summary_html = _summary_markdown_to_html_fragment(summary_text)
+def _wrap_summary_as_html_email(summary_text: str) -> str:
+    """summary.txt の内容を Markdown→HTML し、最小の HTML メールに包む。"""
     body_style = (
         "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;"
         "line-height:1.55;color:#202124;font-size:14px;max-width:720px;"
     )
-    parts = [
-        "<!DOCTYPE html><html><head><meta charset=\"utf-8\">",
-        '<meta name="viewport" content="width=device-width, initial-scale=1">',
-        f"</head><body style=\"{html.escape(body_style, quote=True)}\">",
-        '<h2 style="font-size:16px;margin:0 0 12px;">Youtube文字起こし</h2>',
-        f'<p style="margin:8px 0;"><strong>タイトル：</strong>{safe_title}</p>',
-        '<p style="margin:8px 0;"><strong>URL：</strong>',
-        f'<a href="{safe_url}">{html.escape(video_url or "")}</a></p>',
-    ]
-    if summary_html:
-        parts.append('<h3 style="font-size:15px;margin:16px 0 8px;">【要約】</h3>')
-        parts.append(
-            '<div style="margin:8px 0 16px;padding:12px 14px;border:1px solid #e0e0e0;'
-            'border-radius:8px;background:#fafafa;">'
-        )
-        parts.append(summary_html)
-        parts.append("</div>")
-    parts.append('<hr style="border:none;border-top:1px solid #dadce0;margin:16px 0;">')
-    parts.append(
-        "<p style=\"margin:0;\">その他の成果物（全文・字幕など）は添付ファイルをご確認ください。</p>"
+    inner = _summary_markdown_to_html_fragment(summary_text)
+    return (
+        '<!DOCTYPE html><html><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        f'</head><body style="{html.escape(body_style, quote=True)}">'
+        f"{inner}"
+        "</body></html>"
     )
-    parts.append("</body></html>")
-    return "".join(parts)
 
 
 def _find_subtitle_path(archive_dir: str) -> Optional[str]:
@@ -139,7 +131,7 @@ def send_result_email(
 ) -> bool:
     """
     archive_dir 内の summary.txt, video_info.json, transcript.txt, subtitle_*.vtt を添付して送信する。
-    summary.txt の内容は本文【要約】に含める。Gmail 表示用に HTML（Markdown 変換）も送る（multipart/alternative）。
+    本文は summary.txt の内容のみ（プレーン＋同内容の Markdown→HTML）。multipart/alternative。
     本文が長すぎる場合は MAIL_BODY_SUMMARY_MAX_CHARS（文字数）で切り詰め可能。
     from_email / gmail_password が None の場合は環境変数 GMAIL_USER, GMAIL_APP_PASSWORD を使用。
     """
@@ -177,23 +169,8 @@ def send_result_email(
 
     summary_text = _read_summary_for_body(summary_path)
     summary_text = _apply_body_length_limit(summary_text)
-
-    lines = [
-        "Youtube文字起こし",
-        f"タイトル：{title}",
-        f"URL：{video_url}",
-        "",
-    ]
-    if summary_text:
-        lines.extend(["【要約】", summary_text, ""])
-    lines.extend(
-        [
-            "---",
-            "その他の成果物（全文・字幕など）は添付ファイルをご確認ください。",
-        ]
-    )
-    body_plain = "\n".join(lines)
-    body_html = _build_html_body(title, video_url, summary_text)
+    body_plain = summary_text
+    body_html = _wrap_summary_as_html_email(summary_text)
     alt = MIMEMultipart("alternative")
     alt.attach(MIMEText(body_plain, "plain", "utf-8"))
     alt.attach(MIMEText(body_html, "html", "utf-8"))
