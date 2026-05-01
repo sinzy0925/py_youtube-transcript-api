@@ -6,15 +6,21 @@
 #   直前の run_pipeline.sh 起動時刻から次の起動まで最低 CHANNEL_PIPELINE_GAP_SEC 秒（既定 61）空ける。
 #   （run_pipeline.sh は nohup で即終了するため、「起動間隔」による間引き）
 #
+# --nohup … Cloud Shell 切断後もこのスクリプト全体を続行させる。
+#   nohup bash run_channel.sh …（--nohup 除く）> "${CHANNEL_LOG:-./channel.log}" 2>&1 & と同等。
+#   （内部で RUN_CHANNEL_NOHUP_CHILD=1 を付けて二重 nohup を避ける）
+#
 # Windows (Git Bash) / WSL / Linux 共通: .venv の python を直接使用（activate 不要）
 
 set -euo pipefail
 
 usage() {
-  echo "使い方: $0 <チャンネルURL> --fromto START:END [--gopipeline]" >&2
+  echo "使い方: $0 <チャンネルURL> --fromto START:END [--gopipeline] [--nohup]" >&2
   echo "  例:   $0 'https://www.youtube.com/@ANNnewsCH' --fromto 0:2" >&2
   echo "  例:   $0 'https://www.youtube.com/@ANNnewsCH' --fromto 0:2 --gopipeline" >&2
-  echo "  間隔: 環境変数 CHANNEL_PIPELINE_GAP_SEC（秒、既定 61）" >&2
+  echo "  例:   $0 'https://www.youtube.com/@ANNnewsCH' --fromto 0:2 --gopipeline --nohup" >&2
+  echo "  間隔: CHANNEL_PIPELINE_GAP_SEC（秒、既定 61）" >&2
+  echo "  nohup ログ: CHANNEL_LOG（既定 リポジトリルートの channel.log）" >&2
   exit 1
 }
 
@@ -31,17 +37,42 @@ ROOT="$(cd -P "$(dirname "$_script_path")" && pwd)"
 cd "$ROOT"
 
 GO_PIPELINE=0
-B01_ARGS=()
+GO_NOHUP=0
+PASS_ARGS=()
 for arg in "$@"; do
   if [[ "$arg" == "--gopipeline" ]]; then
     GO_PIPELINE=1
+    PASS_ARGS+=("$arg")
+  elif [[ "$arg" == "--nohup" ]]; then
+    GO_NOHUP=1
   else
+    PASS_ARGS+=("$arg")
+  fi
+done
+
+if [[ "${#PASS_ARGS[@]}" -lt 1 ]] || [[ -z "${PASS_ARGS[0]:-}" ]]; then
+  usage
+fi
+
+B01_ARGS=()
+for arg in "${PASS_ARGS[@]}"; do
+  if [[ "$arg" != "--gopipeline" ]]; then
     B01_ARGS+=("$arg")
   fi
 done
 
-if [[ "${#B01_ARGS[@]}" -lt 1 ]] || [[ -z "${B01_ARGS[0]:-}" ]]; then
-  usage
+# 外側を nohup 化（venv 作成より前に退避して二重起動を避ける）
+if [[ "${GO_NOHUP}" -eq 1 ]] && [[ -z "${RUN_CHANNEL_NOHUP_CHILD:-}" ]]; then
+  if ! command -v nohup >/dev/null 2>&1; then
+    echo "エラー: nohup が見つかりません（Linux / Cloud Shell で利用してください）。" >&2
+    exit 1
+  fi
+  LOG_FILE="${CHANNEL_LOG:-${ROOT}/channel.log}"
+  nohup env RUN_CHANNEL_NOHUP_CHILD=1 bash "${ROOT}/run_channel.sh" "${PASS_ARGS[@]}" >"${LOG_FILE}" 2>&1 &
+  _rc_pid=$!
+  echo "nohup 起動しました PID=${_rc_pid}" >&2
+  echo "ログ: ${LOG_FILE} （確認例: tail -f ${LOG_FILE}）" >&2
+  exit 0
 fi
 
 PYTHON_CMD_ARR=()
