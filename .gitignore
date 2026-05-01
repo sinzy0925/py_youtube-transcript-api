@@ -8,4 +8,5 @@ output/
 .Python
 pip-log.txt
 pip-delete-this-directory.txt
-batch*.log
+*.log
+videoids.txt
