@@ -167,8 +167,8 @@ def run_pipeline(
         to_email=to_email,
         mail_ok=mail_ok,
     )
-    print(f"[パイプライン終了]")
-    print(f"[パイプライン終了] 成果物は {archive_dir} です。 : ({PYTHON})")
+    print(f"=== [終了] ===")
+    print(f"=== [終了] 成果物は {archive_dir} です。")
     return 0
 
 
