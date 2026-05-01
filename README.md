@@ -89,12 +89,50 @@ chmod +x run_pipeline.sh
 - Windows では **`py -3`** を優先して仮想環境を作ります。Python が Store のスタブだけの場合は [python.org](https://www.python.org/downloads/) 版のインストールを推奨します。
 - 仮想環境の Python は **`.venv/Scripts/python.exe`（Windows）または `.venv/bin/python`（Unix）を直接指定**しており、`activate` は不要です。
 
+### `run_channel.sh`（チャンネル単位で videoid 取得 → 各動画へ `run_pipeline.sh`）
+
+**yt-dlp** でチャンネルの動画 ID を `videoids.txt` に書き、その ID ごとに **`run_pipeline.sh`** を順に起動します（`requirements.txt` に `yt-dlp` あり）。
+
+**メインの使い方（例）:**
+
+```bash
+chmod +x run_channel.sh
+./run_channel.sh --fromto 0:2 --url https://www.youtube.com/@ANNnewsCH
+```
+
+- **`--fromto 0:2`** … チャンネル上で**古い動画を 0 番**としたときのインデックス範囲（**両端含む**。この例では 3 本）。
+- **`--url`** … チャンネル URL（`https://www.youtube.com/@…` など）。代わりに **位置引数で URL を先に書く**書き方も可（例: `./run_channel.sh 'https://…' --fromto 0:2`）。
+
+**既定の挙動**
+
+- **パイプライン連続**（各 videoid で `run_pipeline.sh` を実行）と **`nohup` でバックグラウンド起動**がオン（従来の `--gopipeline --nohup` と同等）。Cloud Shell でセッションを閉じても外側の処理は継続しやすい構成です。
+- **外側プロセスが起動した直後**に、リポジトリ直下の **`*.log` を削除**します（`batch*.log` / `channel.log` など）。**`nohup` で起動した内側**では、ログファイルを開いたまま消さないよう **`rm` はしません**。
+- **`nohup` が無い環境**では警告のうえフォアグラウンドで続行します。
+
+**よく使うオプション**
+
+- **`--no-gopipeline`** … `videoids.txt` まで（**b01 のみ**）。パイプラインは回さない。
+- **`--foreground`**（または **`--no-nohup`**）… **フォアグラウンド**で実行（`nohup` しない）。
+
+**環境変数の例**
+
+| 変数 | 意味 |
+|------|------|
+| `CHANNEL_PIPELINE_GAP_SEC` | 連続で `run_pipeline.sh` を叩く際の**最短間隔（秒）**。既定 **61**（429 回避のための間引き）。 |
+| `CHANNEL_LOG` | `nohup` 時の**統合ログ**のパス。未設定時はリポジトリ直下の **`channel.log`**。 |
+
+**その他**
+
+- 親ディレクトリへシンボリックリンクを張る **`junbi.sh`** に **`run_channel.sh` も含まれます**（`run_pipeline.sh` と同様）。
+- **`run_pipeline.sh` 本体は変更しません**（各動画ごとのログは `PIPELINE_LOG` で `batch_channel_<videoid>.log` などに振り分けます）。
+
 ## 使用ライブラリ
 
 - [youtube-transcript-api](https://github.com/jdepoix/youtube-transcript-api)（字幕。API キー不要）
 - `google-genai`（Gemini）
 - `requests`（oEmbed 等）
 - `python-dotenv`（`.env`）
+- `yt-dlp`（`run_channel.sh` / `b01_channel_to_videoid.py` でチャンネルから videoid を列挙する際）
 
 ## 注意
 
