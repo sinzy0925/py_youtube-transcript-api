@@ -2,6 +2,16 @@
 
 YouTube 動画の**字幕取得**（[jdepoix/youtube-transcript-api](https://github.com/jdepoix/youtube-transcript-api)）→ **Gemini による要約**（真実度の目安の付与可）→ **Gmail 送信**までを一括で行うスクリプト群です。API キーは複数本ローテーションする `m03_api_key_manager` に対応します。
 
+## Google Cloud Shell でのクイックスタート
+
+[Google Cloud Shell](https://cloud.google.com/shell) のターミナルに次の 1 行を貼り付けて実行すると、リポジトリの取得と `junbi.sh`（パイプライン用シェルへの実行権限付与・ホーム直下へのシンボリックリンク作成）までのセットアップができます。
+
+```bash
+mkdir -p py_youtube-transcript-api && curl -fsSL https://github.com/sinzy0925/py_youtube-transcript-api/archive/refs/heads/main.tar.gz | tar xz --strip-components=1 -C py_youtube-transcript-api && cd py_youtube-transcript-api && chmod +x junbi.sh && bash junbi.sh
+```
+
+続けてリポジトリ直下の **`.env`** を編集すれば実行できます（なければ `.env.sample` をコピーして作成。変数の例は後述の「`.env` に最低限書くもの」を参照）。例: `./run_pipeline.sh 'https://www.youtube.com/watch?v=…'`。初回実行時に `run_pipeline.sh` が仮想環境（`.venv`）の作成と `pip install -r requirements.txt` を行います。
+
 ## 必要環境
 
 - **Python 3.10+**（3.12 / 3.13 で動作確認想定）
