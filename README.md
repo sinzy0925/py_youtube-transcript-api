@@ -1,6 +1,6 @@
 # py-youtube-transcript-api
 
-YouTube 動画の**字幕取得**（[jdepoix/youtube-transcript-api](https://github.com/jdepoix/youtube-transcript-api)）→ **Gemini による要約**（真実度の目安の付与可）→ **Gmail 送信**までを一括で行うスクリプト群です。API キーは複数本ローテーションする `m03_api_key_manager` に対応します。
+YouTube 動画の**字幕取得**（[sinzy0925/youtube-transcript-api](https://github.com/sinzy0925/youtube-transcript-api)）→ **Gemini による要約**（真実度の目安の付与可）→ **Gmail 送信**までを一括で行うスクリプト群です。API キーは複数本ローテーションする `m03_api_key_manager` に対応します。
 
 ## Google Cloud Shell でのクイックスタート
 
