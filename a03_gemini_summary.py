@@ -149,11 +149,24 @@ def _transient_gemini_error(err: BaseException) -> bool:
     )
 
 
+def _gemini_invalid_api_key_error(err: BaseException) -> bool:
+    """無効・期限切れなど、別の GOOGLE_API_KEY_n が有効なら切り替えて再試行しうるエラー。"""
+    msg = f"{type(err).__name__}: {err}".lower()
+    return any(
+        part in msg
+        for part in (
+            "api key expired",
+            "api_key_invalid",
+            "invalid api key",
+        )
+    )
+
+
 def _should_try_next_api_key(err: BaseException) -> bool:
     """複数キーがあるとき、別キーへの切り替えを試すか。"""
     if api_key_manager.key_count <= 1:
         return False
-    return _transient_gemini_error(err)
+    return _transient_gemini_error(err) or _gemini_invalid_api_key_error(err)
 
 
 def _gemini_max_api_retries() -> int:
