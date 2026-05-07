@@ -11,7 +11,7 @@ cd "$ROOT"
 
 LINK_DIR="$(cd "${ROOT}/.." && pwd)"
 
-for name in run_pipeline.sh run_pipeline1.sh run_pipeline2.sh run_pipeline3.sh run_pipeline4.sh run_pipeline5.sh run_channel.sh; do
+for name in run_pipeline_urls.sh run_pipeline.sh run_pipeline1.sh run_pipeline2.sh run_pipeline3.sh run_pipeline4.sh run_pipeline5.sh run_channel.sh; do
   f="${ROOT}/${name}"
   if [[ ! -f "${f}" ]]; then
     continue
