@@ -4,6 +4,7 @@ YouTube 動画の**字幕取得**（[sinzy0925/youtube-transcript-api](https://g
 
 ## Google Cloud Shell でのクイックスタート
 
+
 [Google Cloud Shell](https://cloud.google.com/shell) のターミナルに次の 1 行を貼り付けて実行すると、リポジトリの取得と `junbi.sh`（パイプライン用シェルへの実行権限付与・ホーム直下へのシンボリックリンク作成）までのセットアップができます。
 
 ```bash
