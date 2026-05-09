@@ -17,6 +17,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
 from email import encoders
+from email.header import Header
 
 PYTHON_NAME = os.path.basename(__file__)
 logger = logging.getLogger(__name__)
@@ -61,6 +62,20 @@ def _read_summary_for_body(summary_path: str) -> str:
     except Exception as e:
         logger.warning("summary.txt の読み込みに失敗しました: %s : (%s)", e, PYTHON_NAME)
     return ""
+
+
+def _sanitize_nbsp_and_ws(s: str) -> str:
+    """
+    メールヘッダ等で ascii 経路になりがちな箇所向けに、問題になりやすい空白を通常スペースへ。
+    \\xa0 (NBSP) は「'ascii' codec can't encode」の典型原因。
+    """
+    if not s:
+        return s
+    return (
+        s.replace("\xa0", " ")
+        .replace("\u202f", " ")
+        .replace("\u3000", " ")
+    )
 
 
 def _apply_body_length_limit(text: str) -> str:
@@ -158,16 +173,20 @@ def send_result_email(
         try:
             with open(video_info_path, "r", encoding="utf-8") as f:
                 info = json.load(f)
-                title = (info.get("title") or title).strip()
+                title = _sanitize_nbsp_and_ws((info.get("title") or title).strip())
         except Exception:
             pass
 
+    title = _sanitize_nbsp_and_ws(title.strip())
+
+    subject_raw = _sanitize_nbsp_and_ws(f"[Youtube文字起こし]{title[:80]}")
     msg = MIMEMultipart()
     msg["From"] = from_email
-    msg["To"] = to_email.strip()
-    msg["Subject"] = f"[Youtube文字起こし]{title[:80]}"
+    msg["To"] = _sanitize_nbsp_and_ws(to_email.strip())
+    msg["Subject"] = Header(subject_raw, "utf-8")
 
     summary_text = _read_summary_for_body(summary_path)
+    summary_text = _sanitize_nbsp_and_ws(summary_text)
     summary_text = _apply_body_length_limit(summary_text)
     body_plain = summary_text
     body_html = _wrap_summary_as_html_email(summary_text)
@@ -193,13 +212,13 @@ def send_result_email(
             attachment_count += 1
 
     try:
+        to_addr = to_email.strip()
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
             server.login(from_email, gmail_password)
-            server.sendmail(from_email, [to_email.strip()], msg.as_string())
-        subj = msg.get("Subject", "")
+            server.send_message(msg, from_addr=from_email, to_addrs=[to_addr])
         ok_msg = (
-            f"✓ メール送信に成功しました: To={to_email.strip()}, From={from_email}, "
-            f"Subject={subj!r}, 添付={attachment_count}件, archive_dir={archive_dir} : ({PYTHON_NAME})"
+            f"✓ メール送信に成功しました: To={to_addr}, From={from_email}, "
+            f"Subject={subject_raw!r}, 添付={attachment_count}件, archive_dir={archive_dir} : ({PYTHON_NAME})"
         )
         print(ok_msg)
         logger.info(ok_msg)

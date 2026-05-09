@@ -45,6 +45,16 @@ GMAIL_USER="送信元のメルアド"
 GMAIL_APP_PASSWORD="送信元のGmailのアプリパスワード"
 ```
 
+以下の様にしておくと、１つのキーが失敗した際に、次のキーを活用して処理が成功する可能性が上がります。
+キーは別々に準備してください。
+```env
+GOOGLE_API_KEY_1="あなたのAPIキー1"
+GOOGLE_API_KEY_2="あなたのAPIキー2"
+GOOGLE_API_KEY_3="あなたのAPIキー3"
+```
+
+`GOOGLE_API_KEY_1` を**1つでも**設定すると、Gemini は**番号付きキーのローテーションだけ**を使います。その場合、未番号の **`GOOGLE_API_KEY` は Gemini には使われません**（番号側を環境から外せば未番号へフォールバック）。複数本命にするなら上のように `_1,_2,...` に揃えるのが安全です。
+
 - **`GOOGLE_API_KEY`**: [Google AI Studio](https://aistudio.google.com/) 等で発行した **Gemini 用 API キー**。
 - **`TRUTH_ASSESSMENT_GROUNDING`**: `1` で真実度（目安）の検索グラウンディングを利用（`0` でオフ。未設定でも既定は ON 扱い）。
 - **`TO_EMAIL`**: 成果物を送る**宛先**。代わりに **`MAIL_TO`** でも可（どちらかがあれば `run_pipeline.sh` はメール送信ルート）。
