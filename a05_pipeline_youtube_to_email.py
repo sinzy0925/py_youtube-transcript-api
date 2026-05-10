@@ -20,11 +20,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
 from datetime import datetime, timezone
 from typing import Any, Optional
 
 import requests
+from youtube_transcript_api import IpBlocked, RequestBlocked
 
 try:
     from dotenv import load_dotenv
@@ -46,6 +48,92 @@ from a04_send_result_email import send_result_email, write_summary_unavailable_p
 
 PYTHON = os.path.basename(__file__)
 DEFAULT_VIDEO = "https://www.youtube.com/watch?v=8W6Qn2hNrAM"
+
+
+def _env_truthy(name: str) -> bool:
+    v = (os.getenv(name) or "").strip().lower()
+    return v in ("1", "true", "yes", "on")
+
+
+def _in_google_cloud_shell() -> bool:
+    """Cloud Shell っぽい環境か（公式 API は無いためヒューリスティック）。"""
+    if (os.getenv("DEVSHELL_PROJECT_ID") or "").strip():
+        return True
+    v = (os.getenv("CLOUD_SHELL") or "").strip().lower()
+    return v in ("true", "1", "yes")
+
+
+def _is_youtube_transcript_ip_block_error(exc: BaseException) -> bool:
+    """youtube-transcript-api の IP / データセンター遮断系。"""
+    if isinstance(exc, (RequestBlocked, IpBlocked)):
+        return True
+    msg = f"{type(exc).__name__}: {exc}".lower()
+    if "youtube is blocking requests from your ip" in msg:
+        return True
+    if "could not retrieve a transcript" in msg and "cloud provider" in msg:
+        return True
+    return False
+
+
+def _maybe_reboot_google_cloud_shell_after_youtube_ip_block(exc: BaseException) -> None:
+    """
+    Cloud Shell で字幕が IP ブロック系に失敗したとき、sudo reboot で再接続を促す。
+    有効化: 環境変数 CLOUDSHELL_REBOOT_ON_YOUTUBE_IP_BLOCK=1（.env 可）
+    公式の「Restart Cloud Shell」APIは無いため、パスワードなし sudo が通る環境向け。
+    """
+    if not _env_truthy("CLOUDSHELL_REBOOT_ON_YOUTUBE_IP_BLOCK"):
+        return
+    if not _is_youtube_transcript_ip_block_error(exc):
+        return
+    if not _in_google_cloud_shell():
+        print(
+            "=== [Cloud Shell 自動再起動] DEVSHELL_PROJECT_ID 等が無いためスキップしました "
+            f"（{PYTHON}）===",
+            file=sys.stderr,
+            flush=True,
+        )
+        return
+
+    print("", flush=True)
+    print(
+        "=== [Cloud Shell 自動再起動] YouTube 字幕取得が IP ブロック系エラーでした。"
+        "仮想環境の再起動として `sudo -n reboot` を実行します ===",
+        flush=True,
+    )
+    print(
+        "=== 数十秒後にセッションが切れる場合があります。"
+        "再接続後に同じパイプラインを再実行してください ===",
+        flush=True,
+    )
+    print(
+        "=== 失敗する場合: Cloud Shell メニュー（歯車）→ Restart Cloud Shell ===",
+        flush=True,
+    )
+    try:
+        r = subprocess.run(
+            ["sudo", "-n", "reboot"],
+            timeout=90,
+            check=False,
+        )
+        if r.returncode != 0:
+            print(
+                f"=== [Cloud Shell 自動再起動] sudo -n reboot が終了コード {r.returncode} でした。"
+                "手動で Restart Cloud Shell してください ===",
+                file=sys.stderr,
+                flush=True,
+            )
+    except FileNotFoundError:
+        print(
+            "=== [Cloud Shell 自動再起動] sudo が見つかりません。手動で Restart してください ===",
+            file=sys.stderr,
+            flush=True,
+        )
+    except subprocess.TimeoutExpired:
+        print(
+            "=== [Cloud Shell 自動再起動] reboot コマンドがタイムアウトしました（接続断の可能性）===",
+            file=sys.stderr,
+            flush=True,
+        )
 
 
 def _fetch_title_via_oembed(watch_url: str) -> str:
@@ -118,6 +206,7 @@ def run_pipeline(
         video_id, _fetched = save_transcript_artifacts(archive_dir, video_ref, languages=languages)
     except Exception as e:
         print(f"字幕取得に失敗: {e} : ({PYTHON})", file=sys.stderr)
+        _maybe_reboot_google_cloud_shell_after_youtube_ip_block(e)
         return 1
     watch_url = video_watch_url(video_id)
     try:

@@ -13,6 +13,13 @@ mkdir -p py_youtube-transcript-api && curl -fsSL https://github.com/sinzy0925/py
 
 続けてリポジトリ直下の **`.env`** を編集すれば実行できます（なければ `.env.sample` をコピーして作成。変数の例は後述の「`.env` に最低限書くもの」を参照）。例: `./run_pipeline.sh 'https://www.youtube.com/watch?v=…'`。初回実行時に `run_pipeline.sh` が仮想環境（`.venv`）の作成と `pip install -r requirements.txt` を行います。
 
+### Cloud Shell: 字幕の IP ブロック時に再起動を試す（任意）
+
+`.env` に **`CLOUDSHELL_REBOOT_ON_YOUTUBE_IP_BLOCK=1`** を書くと、`a05` が **YouTube の IP ブロック系**（`RequestBlocked` / `IpBlocked` や「blocking requests from your IP」など）で字幕取得に失敗した直後、**`sudo -n reboot`** で仮想マシンの再起動を試みます。ログに **`[Cloud Shell 自動再起動]`** と出ます。
+
+- Google は **コマンドライン専用の「Restart Cloud Shell」API を公開していない**ため、この挙動は **OS の reboot** に依存します。環境によっては失敗し、その場合は Cloud Shell メニュー（歯車）の **Restart Cloud Shell** を手動で選んでください。
+- **`DEVSHELL_PROJECT_ID` 等が無い環境では何もしません**（ローカル PC を誤って再起動しないため）。
+
 ## 必要環境
 
 - **Python 3.10+**（3.12 / 3.13 で動作確認想定）
