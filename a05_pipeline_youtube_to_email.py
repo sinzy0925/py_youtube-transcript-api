@@ -20,7 +20,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import subprocess
 import sys
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -77,9 +76,13 @@ def _is_youtube_transcript_ip_block_error(exc: BaseException) -> bool:
 
 def _maybe_reboot_google_cloud_shell_after_youtube_ip_block(exc: BaseException) -> None:
     """
-    Cloud Shell で字幕が IP ブロック系に失敗したとき、sudo reboot で再接続を促す。
+    Cloud Shell で字幕が IP ブロック系に失敗したとき、手動で Restart するようログに強く案内する。
+
     有効化: 環境変数 CLOUDSHELL_REBOOT_ON_YOUTUBE_IP_BLOCK=1（.env 可）
-    公式の「Restart Cloud Shell」APIは無いため、パスワードなし sudo が通る環境向け。
+
+    注意: Google Cloud Shell はコンテナで systemd が PID 1 ではないため、`sudo reboot` は
+    動かず「System has not been booted with systemd…」となる。公式も CLI による VM 再起動は
+    提供していないため、UI の「Restart Cloud Shell」のみが確実。
     """
     if not _env_truthy("CLOUDSHELL_REBOOT_ON_YOUTUBE_IP_BLOCK"):
         return
@@ -87,7 +90,7 @@ def _maybe_reboot_google_cloud_shell_after_youtube_ip_block(exc: BaseException) 
         return
     if not _in_google_cloud_shell():
         print(
-            "=== [Cloud Shell 自動再起動] DEVSHELL_PROJECT_ID 等が無いためスキップしました "
+            "=== [Cloud Shell 再起動案内] DEVSHELL_PROJECT_ID 等が無いため、ここでは案内のみスキップ "
             f"（{PYTHON}）===",
             file=sys.stderr,
             flush=True,
@@ -96,44 +99,22 @@ def _maybe_reboot_google_cloud_shell_after_youtube_ip_block(exc: BaseException) 
 
     print("", flush=True)
     print(
-        "=== [Cloud Shell 自動再起動] YouTube 字幕取得が IP ブロック系エラーでした。"
-        "仮想環境の再起動として `sudo -n reboot` を実行します ===",
+        "=== [Cloud Shell 再起動案内] YouTube 字幕が IP ブロック系で失敗しました ===",
         flush=True,
     )
     print(
-        "=== 数十秒後にセッションが切れる場合があります。"
-        "再接続後に同じパイプラインを再実行してください ===",
+        "=== この環境では `sudo reboot` は使えません（systemd 非使用のコンテナのため）。"
+        "次を手動で行ってください: ===",
         flush=True,
     )
     print(
-        "=== 失敗する場合: Cloud Shell メニュー（歯車）→ Restart Cloud Shell ===",
+        "===   Cloud Shell 右上の歯車アイコン → 「Restart Cloud Shell」 ===",
         flush=True,
     )
-    try:
-        r = subprocess.run(
-            ["sudo", "-n", "reboot"],
-            timeout=90,
-            check=False,
-        )
-        if r.returncode != 0:
-            print(
-                f"=== [Cloud Shell 自動再起動] sudo -n reboot が終了コード {r.returncode} でした。"
-                "手動で Restart Cloud Shell してください ===",
-                file=sys.stderr,
-                flush=True,
-            )
-    except FileNotFoundError:
-        print(
-            "=== [Cloud Shell 自動再起動] sudo が見つかりません。手動で Restart してください ===",
-            file=sys.stderr,
-            flush=True,
-        )
-    except subprocess.TimeoutExpired:
-        print(
-            "=== [Cloud Shell 自動再起動] reboot コマンドがタイムアウトしました（接続断の可能性）===",
-            file=sys.stderr,
-            flush=True,
-        )
+    print(
+        "=== 再接続後、同じ ./run_pipeline.sh … を再実行してください（出口 IP が変わると通ることがあります）===",
+        flush=True,
+    )
 
 
 def _fetch_title_via_oembed(watch_url: str) -> str:
