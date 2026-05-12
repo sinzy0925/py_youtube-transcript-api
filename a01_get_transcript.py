@@ -60,11 +60,11 @@ def is_youtube_transcript_ip_block_error(exc: BaseException) -> bool:
 
 def _youtube_data_api_fallback_keys() -> list[str]:
     """
-    字幕フォールバック専用: .env の youtube-api-key。
+    字幕フォールバック専用: .env の youtube_api_key。
     1 行にカンマ区切りで複数キーを並べればローテーション対象に順に追加される。
     """
     out: list[str] = []
-    raw = (os.getenv("youtube-api-key") or "").strip().strip('"').strip("'")
+    raw = (os.getenv("youtube_api_key") or "").strip().strip('"').strip("'")
     if not raw:
         return out
     for part in re.split(r"\s*,\s*", raw):
@@ -137,14 +137,14 @@ def _try_youtube_data_api_captions(
     languages: list[str],
 ) -> FetchedTranscript | None:
     """
-    YouTube Data API v3 captions を .env の youtube-api-key（複数時は順に）で試す。
+    YouTube Data API v3 captions を .env の youtube_api_key（複数時は順に）で試す。
     公式 API は「API キーのみ」では第三者動画の字幕 DL ができないことが多く、
     多くの場合は 403（要 OAuth）で失敗する。
     """
     keys = _youtube_data_api_fallback_keys()
     if not keys:
         print(
-            "[a01] フォールバック用の youtube-api-key が .env にありません。",
+            "[a01] フォールバック用の youtube_api_key が .env にありません。",
             file=sys.stderr,
         )
         return None
@@ -301,7 +301,7 @@ def _fetch_transcript_with_fallbacks(
             raise
         print(
             "[a01] youtube-transcript-api が IP ブロック等で失敗しました。"
-            " YouTube Data API（.env の youtube-api-key）で再試行します。",
+            " YouTube Data API（.env の youtube_api_key）で再試行します。",
             file=sys.stderr,
             flush=True,
         )

@@ -152,14 +152,29 @@ fi
 
 # プロジェクトの .env をシェル環境に反映（a05 より前に MAIL_TO 等を見える化）
 # ※ 値は Python shlex でエスケープ（BOM/CRLF 可。python-dotenv 優先、失敗時は行パース）
+# ※ 変数名にハイフン等がある行（例: my-api-key）は bash の export 不可のためスキップ。
+#    その値は a05 / a01 の load_dotenv でそのまま読み込まれます。
 if [[ -f "${ROOT}/.env" ]]; then
   set +e
   # shellcheck disable=SC2016,SC1090,SC2046,SC2086
   _env_exports="$(
     "${VENV_PY}" - "${ROOT}" <<'PY'
+import re
 import shlex
 import sys
 from pathlib import Path
+
+# bash の export 名は [A-Za-z_][A-Za-z0-9_]* のみ（ハイフン付き名は不可）。
+# それ以外は Python 側の load_dotenv で読めるため、ここではスキップする。
+_BASH_EXPORTABLE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _bash_export_line(key: str, val: str):
+    k = key.strip()
+    if not k or k.startswith("#") or not _BASH_EXPORTABLE.match(k):
+        return None
+    return "export " + k + "=" + shlex.quote(val)
+
 
 root = Path(sys.argv[1])
 p = root / ".env"
@@ -176,7 +191,9 @@ try:
         k = str(k).strip()
         if not k or k.startswith("#"):
             continue
-        out.append("export " + k + "=" + shlex.quote(str(v)))
+        line = _bash_export_line(k, str(v))
+        if line:
+            out.append(line)
 except Exception:
     try:
         text = p.read_text(encoding="utf-8-sig")
@@ -193,7 +210,9 @@ except Exception:
         v = v.strip()
         if len(v) >= 2 and v[0] in "\"'" and v[0] == v[-1]:
             v = v[1:-1]
-        out.append("export " + k + "=" + shlex.quote(v))
+        ex = _bash_export_line(k, v)
+        if ex:
+            out.append(ex)
 for L in out:
     print(L)
 PY
