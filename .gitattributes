@@ -1,0 +1,2 @@
+# Linux / Cloud Shell で ./run_pipeline.sh を実行するため、シェルは常に LF
+*.sh text eol=lf
