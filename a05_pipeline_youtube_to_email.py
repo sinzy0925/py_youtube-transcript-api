@@ -25,7 +25,6 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 import requests
-from youtube_transcript_api import IpBlocked, RequestBlocked
 
 try:
     from dotenv import load_dotenv
@@ -41,7 +40,11 @@ if hasattr(sys.stdout, "reconfigure"):
     except OSError:
         pass
 
-from a01_get_transcript import save_transcript_artifacts, video_watch_url
+from a01_get_transcript import (
+    is_youtube_transcript_ip_block_error,
+    save_transcript_artifacts,
+    video_watch_url,
+)
 from a03_gemini_summary import SummaryToFileResult, generate_summary_to_file
 from a04_send_result_email import send_result_email, write_summary_unavailable_placeholder
 
@@ -62,18 +65,6 @@ def _in_google_cloud_shell() -> bool:
     return v in ("true", "1", "yes")
 
 
-def _is_youtube_transcript_ip_block_error(exc: BaseException) -> bool:
-    """youtube-transcript-api の IP / データセンター遮断系。"""
-    if isinstance(exc, (RequestBlocked, IpBlocked)):
-        return True
-    msg = f"{type(exc).__name__}: {exc}".lower()
-    if "youtube is blocking requests from your ip" in msg:
-        return True
-    if "could not retrieve a transcript" in msg and "cloud provider" in msg:
-        return True
-    return False
-
-
 def _maybe_reboot_google_cloud_shell_after_youtube_ip_block(exc: BaseException) -> None:
     """
     Cloud Shell で字幕が IP ブロック系に失敗したとき、手動で Restart するようログに強く案内する。
@@ -86,7 +77,7 @@ def _maybe_reboot_google_cloud_shell_after_youtube_ip_block(exc: BaseException) 
     """
     if not _env_truthy("CLOUDSHELL_REBOOT_ON_YOUTUBE_IP_BLOCK"):
         return
-    if not _is_youtube_transcript_ip_block_error(exc):
+    if not is_youtube_transcript_ip_block_error(exc):
         return
     if not _in_google_cloud_shell():
         print(
