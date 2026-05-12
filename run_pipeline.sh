@@ -10,6 +10,8 @@
 # 実行例: ./run_pipeline.sh 'https://youtu.be/...'
 # 並列用: ./run_pipeline1.sh URL … ./run_pipeline5.sh URL（batch1.log…batch5.log、c.f. PIPELINE_SLOT）
 # nohup あり（Linux / Cloud Shell 等）: 既定 batch1.log などへ出力しバックグラウンド。nohup なし: フォアグラウンド（エラーにしない）
+#
+# 環境変数 PIPELINE_OUTPUT_DIR … 設定時は a05 に -o として渡す（成果物ディレクトリ）。未設定時は a05 既定（日時_<id短縮>）。
 
 set -euo pipefail
 
@@ -228,6 +230,9 @@ PY
 fi
 
 ARGS=(a05_pipeline_youtube_to_email.py)
+if [[ -n "${PIPELINE_OUTPUT_DIR:-}" ]]; then
+  ARGS+=(-o "${PIPELINE_OUTPUT_DIR}")
+fi
 if [[ -z "${MAIL_TO:-}" ]] && [[ -z "${TO_EMAIL:-}" ]]; then
   ARGS+=(--skip-email)
 else

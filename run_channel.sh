@@ -10,6 +10,7 @@
 # --foreground | --no-nohup … フォアグラウンド実行（nohup しない）
 #
 # run_pipeline 間隔: CHANNEL_PIPELINE_GAP_SEC（秒、既定 61）。
+# 成果物フォルダ: output/<チャンネルスラッグ>_<チャンネル内インデックス>/（--fromto START:END の START から連番。b01 と同じ並び）。
 # 起動直後（外側プロセスのみ）: リポジトリ直下の *.log を削除してから処理する。
 #
 # Windows (Git Bash) / WSL / Linux 共通: .venv の python を直接使用（activate 不要）
@@ -26,8 +27,62 @@ usage() {
   echo "  videoids のみ: $0 '…' --fromto 0:2 --no-gopipeline" >&2
   echo "  フォアグラウンド: $0 '…' --fromto 0:2 --foreground" >&2
   echo "  間隔: CHANNEL_PIPELINE_GAP_SEC（秒、既定 61）" >&2
+  echo "  出力名: CHANNEL_OUTPUT_SLUG（省略時は URL から @handle 等を推定）" >&2
   echo "  nohup ログ: CHANNEL_LOG（既定: リポジトリ直下 channel.log）" >&2
   exit 1
+}
+
+# チャンネル URL → ファイル名向けスラッグ（@handle /channel/ID /c/… 等）
+_rc_channel_slug_from_url() {
+  local u slug lc
+  u="${1%%#*}"
+  u="${u%%\?*}"
+  u="${u%/}"
+  u="${u#*://}"
+  u="${u#www.}"
+  u="${u#m.}"
+  lc="$(printf '%s' "${u}" | tr '[:upper:]' '[:lower:]')"
+  if [[ "${lc}" =~ ^youtube\.com/@([^/?#]+) ]]; then
+    slug="${BASH_REMATCH[1]}"
+  elif [[ "${lc}" =~ ^youtube\.com/channel/([^/?#]+) ]]; then
+    slug="ch_${BASH_REMATCH[1]}"
+  elif [[ "${lc}" =~ ^youtube\.com/c/([^/?#]+) ]]; then
+    slug="${BASH_REMATCH[1]}"
+  elif [[ "${lc}" =~ ^youtube\.com/user/([^/?#]+) ]]; then
+    slug="${BASH_REMATCH[1]}"
+  else
+    slug="channel"
+  fi
+  slug="$(printf '%s' "${slug}" | LC_ALL=C tr -cs 'A-Za-z0-9_-' '_' | sed 's/^_\|_$//g')"
+  [[ -z "${slug}" ]] && slug="channel"
+  if [[ "${#slug}" -gt 80 ]]; then
+    slug="${slug:0:80}"
+  fi
+  printf '%s' "${slug}"
+}
+
+# PASS_ARGS 内の --fromto START:END から START を取得（videoids.txt の行順と b01 のインデックスに一致）
+_rc_fromto_start_from_pass_args() {
+  local i=0 n=${#PASS_ARGS[@]} spec
+  while [[ "${i}" -lt "${n}" ]]; do
+    if [[ "${PASS_ARGS[$i]}" == "--fromto" ]]; then
+      i=$((i + 1))
+      if [[ "${i}" -ge "${n}" ]]; then
+        printf '%s' "0"
+        return 0
+      fi
+      spec="${PASS_ARGS[$i]}"
+      if [[ "${spec}" =~ ^([0-9]+): ]]; then
+        printf '%s' "${BASH_REMATCH[1]}"
+        return 0
+      fi
+      printf '%s' "0"
+      return 0
+    fi
+    i=$((i + 1))
+  done
+  printf '%s' "0"
+  return 0
 }
 
 # PASS_ARGS を「チャンネルURL・--fromto・メタフラグ」に正規化（順不同可）。
@@ -306,9 +361,17 @@ fi
 
 echo "=== パイプライン連続起動: run_pipeline.sh を videoid ごとに（間隔 ${GAP_SEC}s） ==="
 
+if [[ -n "${CHANNEL_OUTPUT_SLUG:-}" ]]; then
+  _rc_ch_slug="${CHANNEL_OUTPUT_SLUG}"
+else
+  _rc_ch_slug="$(_rc_channel_slug_from_url "${PASS_ARGS[0]}")"
+fi
+_rc_from_start="$(_rc_fromto_start_from_pass_args)"
+echo "出力フォルダ接頭辞: output/${_rc_ch_slug}_<番号>/ （--fromto の START=${_rc_from_start} から連番）"
+
 RUN_PIPELINE=(bash "${ROOT}/run_pipeline.sh")
 last_start_sec=0
-idx=0
+vidx=0
 
 while IFS= read -r line || [[ -n "${line}" ]]; do
   vid="${line//$'\r'/}"
@@ -317,7 +380,6 @@ while IFS= read -r line || [[ -n "${line}" ]]; do
   [[ -z "${vid}" ]] && continue
   [[ "${vid}" == \#* ]] && continue
 
-  idx=$((idx + 1))
   now_sec="$(date +%s)"
   if [[ "${last_start_sec}" -gt 0 ]]; then
     elapsed=$((now_sec - last_start_sec))
@@ -330,13 +392,16 @@ while IFS= read -r line || [[ -n "${line}" ]]; do
 
   last_start_sec="$(date +%s)"
   url="https://youtu.be/${vid}"
-  echo "=== [${idx}] ${RUN_PIPELINE[*]} ${url} （ログ: batch_channel_${vid}.log） ==="
-  PIPELINE_LOG="${ROOT}/batch_channel_${vid}.log" "${RUN_PIPELINE[@]}" "${url}"
+  _rc_seq=$((_rc_from_start + vidx))
+  _rc_out="output/${_rc_ch_slug}_${_rc_seq}"
+  echo "=== [${_rc_seq}] ${RUN_PIPELINE[*]} ${url} → ${_rc_out}/ （ログ: batch_channel_${_rc_ch_slug}_${_rc_seq}.log） ==="
+  PIPELINE_LOG="${ROOT}/batch_channel_${_rc_ch_slug}_${_rc_seq}.log" PIPELINE_OUTPUT_DIR="${_rc_out}" "${RUN_PIPELINE[@]}" "${url}"
+  vidx=$((vidx + 1))
 done < "${VIDEOS_FILE}"
 
-if [[ "${idx}" -eq 0 ]]; then
+if [[ "${vidx}" -eq 0 ]]; then
   echo "エラー: ${VIDEOS_FILE} に有効な videoid がありません。" >&2
   exit 1
 fi
 
-echo "=== パイプライン連続起動 完了: ${idx} 件の run_pipeline を起動しました ==="
+echo "=== パイプライン連続起動 完了: ${vidx} 件の run_pipeline を起動しました ==="
