@@ -11,3 +11,4 @@ pip-delete-this-directory.txt
 *.log
 videoids.txt
 urls.txt
+docs/
