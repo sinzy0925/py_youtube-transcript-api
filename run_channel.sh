@@ -10,7 +10,7 @@
 # --foreground | --no-nohup … フォアグラウンド実行（nohup しない）
 #
 # run_pipeline 間隔: CHANNEL_PIPELINE_GAP_SEC（秒、既定 61）。
-# 成果物フォルダ: output/<チャンネルスラッグ>_<チャンネル内インデックス>/（--fromto START:END の START から連番。b01 と同じ並び）。
+# 成果物フォルダ: output/<チャンネルスラッグ>_<チャンネル内インデックス>/（--fromto START:END の START から連番。b01 の videoids.txt の行順＝動画タブ先頭からの添字に一致）。
 # 起動直後（外側プロセスのみ）: リポジトリ直下の *.log を削除してから処理する。
 #
 # Windows (Git Bash) / WSL / Linux 共通: .venv の python を直接使用（activate 不要）

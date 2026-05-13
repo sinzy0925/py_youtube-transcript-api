@@ -1,6 +1,18 @@
 # py-youtube-transcript-api
 
-YouTube 動画の**字幕取得**（[sinzy0925/youtube-transcript-api](https://github.com/sinzy0925/youtube-transcript-api)）→ **Gemini による要約**（真実度の目安の付与可）→ **Gmail 送信**までを一括で行うスクリプト群です。API キーは複数本ローテーションする `m03_api_key_manager` に対応します。
+[GitHub: sinzy0925/py_youtube-transcript-api](https://github.com/sinzy0925/py_youtube-transcript-api)
+
+YouTube の動画を指定すると、**字幕を取得し、Gemini で要約し（真実度の目安の付与可）、必要なら Gmail で結果を受け取る**までを、ターミナルからまとめて実行するスクリプト群です（ブラウザ上の GUI アプリというより **CLI 向けツールキット**）。
+
+中身の処理は **字幕取得**（[sinzy0925/youtube-transcript-api](https://github.com/sinzy0925/youtube-transcript-api)）→ **Gemini による要約** → **Gmail 送信**です。API キーは複数本ローテーションする `m03_api_key_manager` に対応します。
+
+### よくある使い方（3 パターン）
+
+1. **1 本だけ** … Cloud Shell などで `.env` を用意したうえで、`./run_pipeline.sh 'https://youtu.be/…'` を実行すると、**要約などがメールで届く**（`MAIL_TO` / `TO_EMAIL` と Gmail 送信設定がある場合。無ければ `--skip-email` 相当でファイルのみ）。
+2. **URL を複数** … `urls.txt` に **1 行 1 URL**（`#` 始まりと空行は無視）で書き、`./run_pipeline_urls.sh` または `./run_pipeline_urls.sh /path/to/urls.txt` で **上から順に** `run_pipeline.sh` が走り、**それぞれメールで届く**（起動間隔は `URLS_PIPELINE_GAP_SEC`、既定 65 秒）。
+3. **チャンネル単位** … `./run_channel.sh --fromto 0:10 --url 'https://www.youtube.com/@…'` のように **`--fromto` で範囲**を指定すると、その範囲の動画を **順番に**要約パイプラインへ回す（`b01` はチャンネル「動画」タブ相当の **先頭を 0** とした添字で、**多くのチャンネルでは新しい動画が上のため 0 が最新側**。範囲は両端含む。例 `0:10` は 11 本）。
+
+**Google Cloud Shell**（Google アカウントがあれば無料枠で使える）で動かす手順を下にまとめています。ローカルは **Git Bash / WSL / Linux** などの Bash が使える環境を想定しています。
 
 ## Google Cloud Shell でのクイックスタート
 
@@ -112,12 +124,34 @@ chmod +x run_pipeline.sh
 ```
 
 - **引数は YouTube の URL（または video_id）だけ**（`./run_pipeline.sh` と URL のあいだにスペースが必要です）。
-- **Linux / Cloud Shell 等で `nohup` がある場合**: `python -u` で **`batch1.log`**（リポジトリ直下）へ標準出力・標準エラーを書きつつ**バックグラウンド**実行し、PID を表示して終了します。シェルを閉じても処理が残りやすくなります。
+- **Linux / Cloud Shell 等で `nohup` がある場合**: `python -u` を **`batch1.log`**（リポジトリ直下）へリダイレクトしつつバックグラウンド起動し、**子プロセスの終了まで `wait`** してから戻ります（`run_channel.sh` の連続起動が並列にならないため）。PID を表示します。`nohup` により端末を閉じても Python 側は残りやすいです。
 - **`nohup` が無い環境**（一部の Git Bash など）: エラーにはせず、**フォアグラウンド**で実行します（端末を閉じると停止します）。
 - 仮想環境に **pip が無い**場合（Debian 系の `venv` など）は、`ensurepip` または `get-pip.py` で自動的に入れます（外向き HTTP が必要な場合あり）。
 - ログ **`batch1.log` は `.gitignore` 済み**です。別ファイルにしたい場合は `run_pipeline.sh` 内の `PIPELINE_LOG` を編集してください。
 - Windows では **`py -3`** を優先して仮想環境を作ります。Python が Store のスタブだけの場合は [python.org](https://www.python.org/downloads/) 版のインストールを推奨します。
 - 仮想環境の Python は **`.venv/Scripts/python.exe`（Windows）または `.venv/bin/python`（Unix）を直接指定**しており、`activate` は不要です。
+
+### `run_pipeline_urls.sh`（URL リストを順に `run_pipeline.sh`）
+
+`urls.txt`（または引数で渡したファイル）に **1 行 1 URL** で書き、上から順に `run_pipeline.sh` を起動します。
+
+```bash
+chmod +x run_pipeline_urls.sh
+# リポジトリ直下の urls.txt を使う
+./run_pipeline_urls.sh
+# 別パスのリストを使う
+./run_pipeline_urls.sh ../urls.txt
+```
+
+`urls.txt` の例:
+
+```text
+https://youtu.be/GwDf2lIp7sY?si=Xk-W927GI5JDgWmW
+https://www.youtube.com/watch?v=DhySWbjgvIQ
+```
+
+- **間隔**: 環境変数 **`URLS_PIPELINE_GAP_SEC`**（秒、既定 **65**）。直前の `run_pipeline` 起動から指定秒以上空けてから次を起動します。
+- 空行と **`#` で始まる行**は無視されます。
 
 ### `run_channel.sh`（チャンネル単位で videoid 取得 → 各動画へ `run_pipeline.sh`）
 
@@ -130,7 +164,7 @@ chmod +x run_channel.sh
 ./run_channel.sh --fromto 0:2 --url https://www.youtube.com/@ANNnewsCH
 ```
 
-- **`--fromto 0:2`** … チャンネル上で**古い動画を 0 番**としたときのインデックス範囲（**両端含む**。この例では 3 本）。
+- **`--fromto 0:2`** … チャンネル「動画」一覧の**先頭を 0** とした添字の範囲（**両端含む**。この例では 3 本）。**通常は新しい動画が上**なので、0 は最新側に近い。
 - **`--url`** … チャンネル URL（`https://www.youtube.com/@…` など）。代わりに **位置引数で URL を先に書く**書き方も可（例: `./run_channel.sh 'https://…' --fromto 0:2`）。
 
 **既定の挙動**
@@ -150,11 +184,12 @@ chmod +x run_channel.sh
 |------|------|
 | `CHANNEL_PIPELINE_GAP_SEC` | 連続で `run_pipeline.sh` を叩く際の**最短間隔（秒）**。既定 **61**（429 回避のための間引き）。 |
 | `CHANNEL_LOG` | `nohup` 時の**統合ログ**のパス。未設定時はリポジトリ直下の **`channel.log`**。 |
+| `CHANNEL_OUTPUT_SLUG` | 成果物・ログのファイル名に使うスラッグ。**未設定時はチャンネル URL から推定**（例: `@foo` → `foo`）。 |
 
 **その他**
 
 - 親ディレクトリへシンボリックリンクを張る **`junbi.sh`** に **`run_channel.sh` も含まれます**（`run_pipeline.sh` と同様）。
-- **`run_pipeline.sh` 本体は変更しません**（各動画ごとのログは `PIPELINE_LOG` で `batch_channel_<videoid>.log` などに振り分けます）。
+- **`run_pipeline.sh` 本体は変更しません。** チャンネル連続時は `PIPELINE_LOG` で `batch_channel_<チャンネルスラッグ>_<チャンネル内インデックス>.log` に分け、`PIPELINE_OUTPUT_DIR` で成果物を `output/<スラッグ>_<インデックス>/` に出すように起動します（スラッグは URL から推定。`CHANNEL_OUTPUT_SLUG` で上書き可）。
 
 ## 使用ライブラリ
 

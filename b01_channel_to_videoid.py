@@ -4,8 +4,9 @@
 b01 — チャンネル URL から動画 ID を取得し、スクリプトと同じフォルダの videoids.txt に上書き保存する。
 
 前提（あいまいさの解決）:
-  - 「一番古い動画」をインデックス 0 とし、新しいほど番号が増える。
-  - --fromto A:B は両端を含む（A:2 なら A, A+1, …, B のすべて）。
+  - --fromto の A:B は、チャンネル「動画」タブ相当のプレイリストにおける **先頭（画面上部）を 0 とした 0-based の添字範囲（両端含む）**。
+  - 多くのチャンネルでは YouTube の並びが **新しい動画が上**のため、**小さい添字ほど新しい動画**になる（例: 0 が最新付近）。
+  - yt-dlp の extract_flat ではエントリに playlist_index が付かないことが多く、その場合は **返却順＝上記の並び**をそのまま使う（下の sort は同一キーでは順序不変）。
   - videoids.txt の出力先はこの .py と同じディレクトリ。
 
 依存: yt-dlp（requirements.txt に記載）
@@ -66,7 +67,7 @@ def normalize_channel_videos_url(url: str) -> str:
 
 
 def fetch_video_ids_playlist(url: str, start: int, end: int) -> list[str]:
-    """playlist_reverse 後の「古いほど playlist_index が小さい」並びにそろえ、0-based [start, end] を取得する。"""
+    """yt-dlp の playlist_items（1-based）で start+1 .. end+1 を取り、extract_flat 時の返却順で ID を返す。"""
     import yt_dlp
 
     one_lo = start + 1
@@ -86,7 +87,7 @@ def fetch_video_ids_playlist(url: str, start: int, end: int) -> list[str]:
         info = ydl.extract_info(url, download=False)
 
     entries = [e for e in (info.get("entries") or []) if e and e.get("id")]
-    # playlist_reverse 時も entries の列挙順が版・Extractor でずれることがあるため playlist_index で統一
+    # extract_flat では playlist_index が None のことが多い → 同一キーで順序は維持され、yt-dlp の返却順がそのまま使われる
     entries.sort(key=lambda e: int(e.get("playlist_index") or 0))
     return [str(e["id"]) for e in entries]
 
@@ -103,7 +104,7 @@ def main() -> int:
         "--fromto",
         required=True,
         metavar="START:END",
-        help="最古を 0 としたインデックスの範囲（両端含む）。例: 0:2 は 3 本",
+        help="チャンネル動画リストの先頭を 0 とした添字の範囲（両端含む）。通常は新しい動画が上なので 0 が最新側。例: 0:2 は 3 本",
     )
     args = p.parse_args()
 
