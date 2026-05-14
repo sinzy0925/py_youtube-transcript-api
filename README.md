@@ -14,6 +14,26 @@ YouTube の動画を指定すると、**字幕を取得し、Gemini で要約し
 
 **Google Cloud Shell**（Google アカウントがあれば無料枠で使える）で動かす手順を下にまとめています。ローカルは **Git Bash / WSL / Linux** などの Bash が使える環境を想定しています。
 
+## Cloud Shell（スマホの Google Cloud アプリ等）: URL だけ貼りやすくする（任意）
+
+スマホの **Google Cloud** アプリから Cloud Shell を開き、`./run_pipeline.sh "https://youtu.be/…"` のように **コマンドと引用符で URL を囲む形**を一度に貼るのは、メモ帳などで **`./run_pipeline.sh` と `"https://…"` を組み立てる**必要があり面倒です。
+
+その場合、Cloud Shell の **Bash にエイリアス**を登録すると、**先に `./run_pipeline.sh "` までを固定し、あとから URL を貼る**流れにできます（毎回、リポジトリ直下に **`cd` してから**使ってください。例: `cd ~/py_youtube-transcript-api` や `junbi.sh` で作った作業ディレクトリ）。
+
+1. `nano ~/.bashrc` でファイルを開く。
+2. 次の 1 行を追記する（行末の `"` は **開きっぱなし**で、URL を後から閉じるためです）。
+
+```bash
+alias aa='./run_pipeline.sh "'
+```
+
+3. **Ctrl+O**（保存）→ **Enter** → **Ctrl+X**（nano を終了）。
+4. `source ~/.bashrc` で反映。
+
+以降、リポジトリ直下に `cd` したうえで **`aa` と入力して Enter** すると、シェルが **`>`** の継続プロンプトを出すので、そこに **YouTube からコピーした URL を貼り付け**、**最後に半角の `"` を付けて** Enter すれば実行されます。
+
+**改善される点:** メモなどでコマンドと引用符を毎回組み立てる手間を減らせます。
+
 ## Google Cloud Shell でのクイックスタート
 
 
