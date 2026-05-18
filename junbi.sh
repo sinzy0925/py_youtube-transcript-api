@@ -2,6 +2,7 @@
 # 初回準備: run_pipeline*.sh / run_channel.sh に実行権限を付与し、親ディレクトリ（../）に同名のシンボリックリンクを作る
 #   bash junbi.sh
 #   または: chmod +x junbi.sh && ./junbi.sh
+#   エイリアス aa/bb を「このプロンプトのシェル」にすぐ載せたい場合: source junbi.sh
 # Cloud Shell 等: リポジトリが ~/py_youtube-transcript-api なら ~/run_pipeline.sh や ~/run_channel.sh からも実行しやすくなる
 
 set -euo pipefail
@@ -41,8 +42,17 @@ else
   echo "${BASHRC} に既に ${BB_LINE} があります。スキップ。"
 fi
 
-if [[ -f "${HOME}/.bashrc" ]]; then
-  # shellcheck source=/dev/null
-  source "${HOME}/.bashrc"
-  echo "反映: source ${HOME}/.bashrc"
+# bash junbi.sh / ./junbi.sh は子プロセスで動く。末尾の source はその子にしか効かず、
+# いま入力している対話シェルにはエイリアスが伝わらない（手動 source と違う）。
+# source junbi.sh のときだけ .bashrc を現在のシェルに読み込む。
+if [[ -f "${BASHRC}" ]]; then
+  if [[ "${BASH_SOURCE[0]}" != "${0}" ]]; then
+    # shellcheck source=/dev/null
+    source "${BASHRC}"
+    echo "反映: 現在のシェルに source ${BASHRC} しました（aa / bb が使えます）。"
+  else
+    echo "注意: この起動方法では .bashrc の source は子シェルにだけ効きます。プロンプト側には届きません。"
+    echo "      このターミナルで aa / bb を使うには:  source ${BASHRC}"
+    echo "      次回から一発で載せたい場合は:      source junbi.sh"
+  fi
 fi
