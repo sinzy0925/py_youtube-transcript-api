@@ -28,7 +28,10 @@ BASHRC="${HOME}/.bashrc"
 AA_LINE="alias aa='./run_pipeline.sh \"'"
 BB_LINE="alias bb='cat ~/py_youtube-transcript-api/batch1.log'"
 
+AA=0
+
 if [[ ! -f "${BASHRC}" ]] || ! grep -Fxq "${AA_LINE}" "${BASHRC}" 2>/dev/null; then
+  AA=1
   printf '%s\n' "${AA_LINE}" >> "${BASHRC}"
   echo "追記: ${BASHRC} に ${AA_LINE}"
 else
@@ -36,13 +39,14 @@ else
 fi
 
 if [[ ! -f "${BASHRC}" ]] || ! grep -Fxq "${BB_LINE}" "${BASHRC}" 2>/dev/null; then
+  AA=2
   printf '%s\n' "${BB_LINE}" >> "${BASHRC}"
   echo "追記: ${BASHRC} に ${BB_LINE}"
 else
   echo "${BASHRC} に既に ${BB_LINE} があります。スキップ。"
 fi
 
-if [[ -f "${BASHRC}" ]]; then
+if [[ -f "${BASHRC}" ]] && [[ "${AA}" != 0 ]] ; then
   # shellcheck source=/dev/null
   source "${BASHRC}"
   echo "反映: 現在のシェルに source ${BASHRC} しました。"
