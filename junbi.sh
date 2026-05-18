@@ -42,22 +42,11 @@ else
   echo "${BASHRC} に既に ${BB_LINE} があります。スキップ。"
 fi
 
-# bash junbi.sh / ./junbi.sh は子プロセスで動く。末尾の source はその子にしか効かず、
-# いま入力している対話シェルにはエイリアスが伝わらない（手動 source と違う）。
-# source junbi.sh のときだけ .bashrc を現在のシェルに読み込む。
 if [[ -f "${BASHRC}" ]]; then
-  if [[ "${BASH_SOURCE[0]}" != "${0}" ]]; then
-    # shellcheck source=/dev/null
-    source "${BASHRC}"
-    echo "反映: 現在のシェルに source ${BASHRC} しました。"
-    echo "新規シェルから aa / bb コマンドが使えます。"
-    echo 'aa実行後、YoutubeのURLを貼り付け、最後に半角の\"を付けてEnterを押すと実行されます。'
-    echo "bb実行後、batch1.logを表示します。"
-  else
-    source "${BASHRC}"
-    echo "反映: 現在のシェルに source ${BASHRC} しました。"
-    echo "新規シェルから aa / bb コマンドが使えます。"
-    echo 'aa実行後、YoutubeのURLを貼り付け、最後に半角の\"を付けてEnterを押すと実行されます。'
-    echo "bb実行後、batch1.logを表示します。"
-  fi
+  # shellcheck source=/dev/null
+  source "${BASHRC}"
+  echo "反映: 現在のシェルに source ${BASHRC} しました。"
+  echo "新規シェルから aa / bb コマンドが使えます。"
+  echo 'aa実行後、YoutubeのURLを貼り付け、最後に半角の\"を付けてEnterを押すと実行されます。'
+  echo "bb実行後、batch1.logを表示します。"
 fi
