@@ -47,6 +47,6 @@ if [[ -f "${BASHRC}" ]]; then
   source "${BASHRC}"
   echo "反映: 現在のシェルに source ${BASHRC} しました。"
   echo "新規シェルから aa / bb コマンドが使えます。"
-  echo 'aa実行後、YoutubeのURLを貼り付け、最後に半角の\"を付けてEnterを押すと実行されます。'
+  echo 'aa実行後、YoutubeのURLを貼り付け、最後に半角の"を付けてEnterを押すと実行されます。'
   echo "bb実行後、batch1.logを表示します。"
 fi
