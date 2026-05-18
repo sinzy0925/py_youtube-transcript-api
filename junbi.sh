@@ -41,8 +41,8 @@ else
   echo "${BASHRC} に既に ${BB_LINE} があります。スキップ。"
 fi
 
-if [[ -f "${BASHRC}" ]]; then
+if [[ -f "${HOME}/.bashrc" ]]; then
   # shellcheck source=/dev/null
-  source "${BASHRC}"
-  echo "反映: source ${BASHRC}"
+  source "${HOME}/.bashrc"
+  echo "反映: source ${HOME}/.bashrc"
 fi
