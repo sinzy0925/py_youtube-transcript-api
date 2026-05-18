@@ -51,8 +51,10 @@ if [[ -f "${BASHRC}" ]]; then
     source "${BASHRC}"
     echo "反映: 現在のシェルに source ${BASHRC} しました（aa / bb が使えます）。"
   else
-    echo "注意: この起動方法では .bashrc の source は子シェルにだけ効きます。プロンプト側には届きません。"
-    echo "      このターミナルで aa / bb を使うには:  source ${BASHRC}"
-    echo "      次回から一発で載せたい場合は:      source junbi.sh"
+    source "${BASHRC}"
+    echo "反映: 現在のシェルに source ${BASHRC} しました。"
+    echo "新規シェルから aa / bb コマンドが使えます。"
+    echo 'aa実行後、YoutubeのURLを貼り付け、最後に半角の\"を付けてEnterを押すと実行されます。'
+    echo "bb実行後、batch1.logを表示します。"
   fi
 fi
