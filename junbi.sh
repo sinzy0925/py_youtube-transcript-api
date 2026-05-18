@@ -21,3 +21,28 @@ for name in run_pipeline_urls.sh run_pipeline.sh run_pipeline1.sh run_pipeline2.
   ln -sf "${f}" "${LINK_DIR}/${name}"
   echo "リンク作成: ${LINK_DIR}/${name} -> ${f}"
 done
+
+# ~/.bashrc にエイリアスが無ければ追記（有れば何もしない）
+BASHRC="${HOME}/.bashrc"
+AA_LINE="alias aa='./run_pipeline.sh \"'"
+BB_LINE="alias bb='cat ~/py_youtube-transcript-api/batch1.log'"
+
+if [[ ! -f "${BASHRC}" ]] || ! grep -Fxq "${AA_LINE}" "${BASHRC}" 2>/dev/null; then
+  printf '%s\n' "${AA_LINE}" >> "${BASHRC}"
+  echo "追記: ${BASHRC} に ${AA_LINE}"
+else
+  echo "${BASHRC} に既に ${AA_LINE} があります。スキップ。"
+fi
+
+if [[ ! -f "${BASHRC}" ]] || ! grep -Fxq "${BB_LINE}" "${BASHRC}" 2>/dev/null; then
+  printf '%s\n' "${BB_LINE}" >> "${BASHRC}"
+  echo "追記: ${BASHRC} に ${BB_LINE}"
+else
+  echo "${BASHRC} に既に ${BB_LINE} があります。スキップ。"
+fi
+
+if [[ -f "${BASHRC}" ]]; then
+  # shellcheck source=/dev/null
+  source "${BASHRC}"
+  echo "反映: source ${BASHRC}"
+fi
