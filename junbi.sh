@@ -27,6 +27,7 @@ done
 BASHRC="${HOME}/.bashrc"
 AA_LINE="alias aa='./run_pipeline.sh \"'"
 BB_LINE="alias bb='cat ~/py_youtube-transcript-api/batch1.log'"
+CC_LINE="alias retry='./run_pipeline.sh --retry "'"
 
 AA=0
 
@@ -46,11 +47,20 @@ else
   echo "${BASHRC} に既に ${BB_LINE} があります。スキップ。"
 fi
 
+if [[ ! -f "${BASHRC}" ]] || ! grep -Fxq "${CC_LINE}" "${BASHRC}" 2>/dev/null; then
+  AA=3
+  printf '%s\n' "${CC_LINE}" >> "${BASHRC}"
+  echo "追記: ${BASHRC} に ${CC_LINE}"
+else
+  echo "${BASHRC} に既に ${CC_LINE} があります。スキップ。"
+fi
+
 if [[ -f "${BASHRC}" ]] && [[ "${AA}" != 0 ]] ; then
   # shellcheck source=/dev/null
   source "${BASHRC}"
   echo "反映: 現在のシェルに source ${BASHRC} しました。"
-  echo "新規シェルから aa / bb コマンドが使えます。"
+  echo "新規シェルから aa / bb / retry コマンドが使えます。"
   echo 'aa実行後、YoutubeのURLを貼り付け、最後に半角の"を付けてEnterを押すと実行されます。'
   echo "bb実行後、batch1.logを表示します。"
+  echo "retry実行後、urls.txtの最後の有効行を再実行します。"
 fi
