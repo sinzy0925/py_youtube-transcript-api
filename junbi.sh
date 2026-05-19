@@ -27,8 +27,8 @@ done
 BASHRC="${HOME}/.bashrc"
 AA_LINE="alias aa='./run_pipeline.sh \"'"
 BB_LINE="alias bb='cat ~/py_youtube-transcript-api/batch1.log'"
-CC_LINE="alias retry='./run_pipeline.sh --retry \"'"
-CC_LINE_OLD="alias retry='./run_pipeline.sh --retry 1'"
+# retry は数字だけなので末尾スペースで十分（aa の未閉じ " は URL 用。1" だと bash が番号を渡せない）
+CC_LINE="alias retry='./run_pipeline.sh --retry '"
 
 AA=0
 
@@ -48,18 +48,19 @@ else
   echo "${BASHRC} に既に ${BB_LINE} があります。スキップ。"
 fi
 
-if [[ -f "${BASHRC}" ]] && grep -Fxq "${CC_LINE_OLD}" "${BASHRC}" 2>/dev/null; then
-  # 旧形式（--retry 1 固定）を aa と同じ「番号＋"」形式へ差し替え
-  sed -i.bak "/^alias retry=/d" "${BASHRC}"
-  AA=3
-  printf '%s\n' "${CC_LINE}" >> "${BASHRC}"
-  echo "更新: ${BASHRC} の retry エイリアスを新形式に差し替えました。"
+if [[ -f "${BASHRC}" ]] && grep -q '^alias retry=' "${BASHRC}" 2>/dev/null; then
+  if ! grep -Fxq "${CC_LINE}" "${BASHRC}" 2>/dev/null; then
+    sed -i.bak '/^alias retry=/d' "${BASHRC}"
+    AA=3
+    printf '%s\n' "${CC_LINE}" >> "${BASHRC}"
+    echo "更新: ${BASHRC} の retry エイリアスを差し替えました。"
+  else
+    echo "${BASHRC} の retry エイリアスは最新です。スキップ。"
+  fi
 elif [[ ! -f "${BASHRC}" ]] || ! grep -Fxq "${CC_LINE}" "${BASHRC}" 2>/dev/null; then
   AA=3
   printf '%s\n' "${CC_LINE}" >> "${BASHRC}"
   echo "追記: ${BASHRC} に ${CC_LINE}"
-else
-  echo "${BASHRC} に既に ${CC_LINE} があります。スキップ。"
 fi
 
 if [[ -f "${BASHRC}" ]] && [[ "${AA}" != 0 ]] ; then
@@ -69,5 +70,5 @@ if [[ -f "${BASHRC}" ]] && [[ "${AA}" != 0 ]] ; then
   echo "新規シェルから aa / bb / retry コマンドが使えます。"
   echo 'aa実行後、YoutubeのURLを貼り付け、最後に半角の"を付けてEnterを押すと実行されます。'
   echo "bb実行後、batch1.logを表示します。"
-  echo 'retry実行後、1 や 2 などを入力し、最後に半角の"を付けてEnter（1=最新、2=その前…）。'
+  echo 'retry実行後、1 や 2 だけ入力して Enter（" は不要。1=最新、2=その前…）。'
 fi

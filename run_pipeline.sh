@@ -82,11 +82,14 @@ while [[ "${#}" -gt 0 ]]; do
   case "${1}" in
     --retry)
       shift
-      if [[ -z "${1:-}" ]] || ! [[ "${1}" =~ ^[1-9][0-9]*$ ]]; then
+      _retry_arg="${1:-}"
+      _retry_arg="${_retry_arg#\"}"
+      _retry_arg="${_retry_arg%\"}"
+      if [[ -z "${_retry_arg}" ]] || ! [[ "${_retry_arg}" =~ ^[1-9][0-9]*$ ]]; then
         echo "エラー: --retry の後に 1 以上の番号を指定してください（例: $0 --retry 1）" >&2
         exit 1
       fi
-      RETRY_N="${1}"
+      RETRY_N="${_retry_arg}"
       shift
       ;;
     -h | --help)
