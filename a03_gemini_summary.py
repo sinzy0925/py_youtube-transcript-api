@@ -31,7 +31,7 @@ from m03_api_key_manager import api_key_manager
 
 # 要約: 既定のモデル試行順（m03_gemini_model_fallback 未導入時、または要約専用）
 _DEFAULT_SUMMARY_MODELS: tuple[str, ...] = (
-    "gemini-3.1-flash-lite-preview",
+    "gemini-3.1-flash-lite",
     "gemini-3-flash-preview",
     "gemini-2.5-flash",
     "gemini-2.5-flash-lite",
