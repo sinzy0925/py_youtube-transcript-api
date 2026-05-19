@@ -19,10 +19,10 @@ set -euo pipefail
 
 usage() {
   echo "使い方: $0 <YouTube_URL_または_video_id>" >&2
-  echo "       $0 --retry <N>   （N=1 が最新、2 がその 1 つ前 …）" >&2
+  echo "       $0 --retry [N]  （省略時 N=1＝最新、2 がその 1 つ前 …）" >&2
   echo "  例:   $0 'https://youtu.be/2UF8PHOIfrI?si=xxxx'" >&2
   echo "  通常実行時、リポジトリ直下の urls.txt に URL を 1 行追記します。" >&2
-  echo "  --retry N … urls.txt の末尾から N 番目の有効行を再実行（追記しません）。" >&2
+  echo "  --retry [N] … urls.txt の末尾から N 番目の有効行を再実行（追記しません）。" >&2
   exit 1
 }
 
@@ -83,14 +83,18 @@ while [[ "${#}" -gt 0 ]]; do
     --retry)
       shift
       _retry_arg="${1:-}"
-      _retry_arg="${_retry_arg#\"}"
-      _retry_arg="${_retry_arg%\"}"
-      if [[ -z "${_retry_arg}" ]] || ! [[ "${_retry_arg}" =~ ^[1-9][0-9]*$ ]]; then
-        echo "エラー: --retry の後に 1 以上の番号を指定してください（例: $0 --retry 1）" >&2
-        exit 1
+      if [[ -z "${_retry_arg}" ]]; then
+        RETRY_N=1
+      else
+        _retry_arg="${_retry_arg#\"}"
+        _retry_arg="${_retry_arg%\"}"
+        if ! [[ "${_retry_arg}" =~ ^[1-9][0-9]*$ ]]; then
+          echo "エラー: --retry の番号は 1 以上の整数にしてください（例: $0 --retry 1）" >&2
+          exit 1
+        fi
+        RETRY_N="${_retry_arg}"
+        shift
       fi
-      RETRY_N="${_retry_arg}"
-      shift
       ;;
     -h | --help)
       usage

@@ -27,8 +27,8 @@ done
 BASHRC="${HOME}/.bashrc"
 AA_LINE="alias aa='./run_pipeline.sh \"'"
 BB_LINE="alias bb='cat ~/py_youtube-transcript-api/batch1.log'"
-# retry は数字だけなので末尾スペースで十分（aa の未閉じ " は URL 用。1" だと bash が番号を渡せない）
-CC_LINE="alias retry='./run_pipeline.sh --retry '"
+# retry のみ → --retry（省略時 1＝最新）。retry 2 → --retry 2
+CC_LINE="alias retry='./run_pipeline.sh --retry'"
 
 AA=0
 
@@ -70,5 +70,5 @@ if [[ -f "${BASHRC}" ]] && [[ "${AA}" != 0 ]] ; then
   echo "新規シェルから aa / bb / retry コマンドが使えます。"
   echo 'aa実行後、YoutubeのURLを貼り付け、最後に半角の"を付けてEnterを押すと実行されます。'
   echo "bb実行後、batch1.logを表示します。"
-  echo 'retry実行後、1 や 2 だけ入力して Enter（" は不要。1=最新、2=その前…）。'
+  echo 'retry のみ Enter で最新を再実行。retry 2 で 1 つ前…。'
 fi
