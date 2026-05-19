@@ -9,7 +9,7 @@
 #
 # 実行例: ./run_pipeline.sh 'https://youtu.be/...'
 # 並列用: ./run_pipeline1.sh URL … ./run_pipeline5.sh URL（batch1.log…batch5.log、c.f. PIPELINE_SLOT）
-# nohup あり: python をバックグラウンド起動しつつ **wait で終了まで待つ**（run_channel 連続時の並列化防止）。
+# nohup あり: python をバックグラウンド起動し、シェルはすぐ戻る（進捗は PIPELINE_LOG / tail -f）。
 #
 # 環境変数 PIPELINE_OUTPUT_DIR … 設定時は a05 に -o として渡す（成果物ディレクトリ）。未設定時は a05 既定（日時_<id短縮>）。
 
@@ -250,12 +250,12 @@ if command -v nohup >/dev/null 2>&1; then
   echo "nohup バックグラウンド: ログ → ${PIPELINE_LOG}（python -u）" >&2
   nohup "${VENV_PY}" -u "${ARGS[@]}" "${VIDEO_REF}" >"${PIPELINE_LOG}" 2>&1 &
   _bg_pid=$!
-  echo "PID ${_bg_pid}  （完了まで待機 → ${PIPELINE_LOG}）" >&2
-  # cat でログを追うと、Git Bash / Windows 等で子プロセス終了前に cat が終わり、
-  # run_channel.sh が次の run_pipeline を起動してしまう（並列化）ことがある。
-  wait "${_bg_pid}"
-  exit $?
+  echo "起動しました PID ${_bg_pid}。進捗: cat ${PIPELINE_LOG}" >&2
+  exit 0
 fi
 
-echo "注意: nohup がありません。フォアグラウンド実行します（端末を閉じると停止します）。" >&2
-exec "${VENV_PY}" -u "${ARGS[@]}" "${VIDEO_REF}"
+echo "注意: nohup がありません。バックグラウンド起動（端末を閉じると停止しやすい）→ ${PIPELINE_LOG}" >&2
+"${VENV_PY}" -u "${ARGS[@]}" "${VIDEO_REF}" >"${PIPELINE_LOG}" 2>&1 &
+_bg_pid=$!
+echo "起動しました PID ${_bg_pid}。進捗: cat ${PIPELINE_LOG}" >&2
+exit 0

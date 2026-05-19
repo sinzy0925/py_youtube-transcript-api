@@ -144,8 +144,8 @@ chmod +x run_pipeline.sh
 ```
 
 - **引数は YouTube の URL（または video_id）だけ**（`./run_pipeline.sh` と URL のあいだにスペースが必要です）。
-- **Linux / Cloud Shell 等で `nohup` がある場合**: `python -u` を **`batch1.log`**（リポジトリ直下）へリダイレクトしつつバックグラウンド起動し、**子プロセスの終了まで `wait`** してから戻ります（`run_channel.sh` の連続起動が並列にならないため）。PID を表示します。`nohup` により端末を閉じても Python 側は残りやすいです。
-- **`nohup` が無い環境**（一部の Git Bash など）: エラーにはせず、**フォアグラウンド**で実行します（端末を閉じると停止します）。
+- **Linux / Cloud Shell 等で `nohup` がある場合**: `python -u` を **`batch1.log`**（リポジトリ直下）へリダイレクトしつつバックグラウンド起動し、**シェルはすぐプロンプトに戻ります**。PID とログパスを表示します。進捗は `tail -f batch1.log` など。`nohup` により端末を閉じても Python 側は残りやすいです。
+- **`nohup` が無い環境**（一部の Git Bash など）: 同様にバックグラウンド起動してすぐ戻ります（端末を閉じると停止しやすい）。
 - 仮想環境に **pip が無い**場合（Debian 系の `venv` など）は、`ensurepip` または `get-pip.py` で自動的に入れます（外向き HTTP が必要な場合あり）。
 - ログ **`batch1.log` は `.gitignore` 済み**です。別ファイルにしたい場合は `run_pipeline.sh` 内の `PIPELINE_LOG` を編集してください。
 - Windows では **`py -3`** を優先して仮想環境を作ります。Python が Store のスタブだけの場合は [python.org](https://www.python.org/downloads/) 版のインストールを推奨します。
