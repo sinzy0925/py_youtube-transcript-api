@@ -8,6 +8,8 @@
 # API キー / メール: リポジトリの .env をシェルに取り込んでから a05 の引数（--skip-email）を決める
 #
 # 実行例: ./run_pipeline.sh 'https://youtu.be/...'
+#   実行時に ${ROOT}/urls.txt へ URL を 1 行追記（失敗時の再実行用）
+#   ./run_pipeline.sh --retry 1 … urls.txt の最後の有効行（空行・# 除く）を再実行（追記しない）
 # 並列用: ./run_pipeline1.sh URL … ./run_pipeline5.sh URL（batch1.log…batch5.log、c.f. PIPELINE_SLOT）
 # nohup あり: python をバックグラウンド起動し、シェルはすぐ戻る（進捗は PIPELINE_LOG / tail -f）。
 #
@@ -17,8 +19,37 @@ set -euo pipefail
 
 usage() {
   echo "使い方: $0 <YouTube_URL_または_video_id>" >&2
+  echo "       $0 --retry 1" >&2
   echo "  例:   $0 'https://youtu.be/2UF8PHOIfrI?si=xxxx'" >&2
+  echo "  通常実行時、リポジトリ直下の urls.txt に URL を 1 行追記します。" >&2
+  echo "  --retry 1 … urls.txt の最後の有効行を再実行（追記しません）。" >&2
   exit 1
+}
+
+# urls.txt の末尾から、空行・# コメント以外の最後の行を返す（run_pipeline_urls.sh と同趣旨）
+_urls_txt_last_entry() {
+  local _f="$1" _line _last=""
+  if [[ ! -f "${_f}" ]]; then
+    return 1
+  fi
+  while IFS= read -r _line || [[ -n "${_line}" ]]; do
+    _line="${_line//$'\r'/}"
+    _line="${_line#"${_line%%[![:space:]]*}"}"
+    _line="${_line%"${_line##*[![:space:]]}"}"
+    [[ -z "${_line}" ]] && continue
+    [[ "${_line}" == \#* ]] && continue
+    _last="${_line}"
+  done < "${_f}"
+  if [[ -z "${_last}" ]]; then
+    return 1
+  fi
+  printf '%s' "${_last}"
+}
+
+_append_urls_txt() {
+  local _url="$1"
+  printf '%s\n' "${_url}" >>"${URLS_TXT}"
+  echo "追記: ${URLS_TXT}" >&2
 }
 
 # シンボリックリンク経由（例: ~/run_pipeline.sh → リポジトリ内）でもリポジトリルートに cd する
@@ -33,6 +64,7 @@ while [[ -L "$_script_path" ]]; do
 done
 ROOT="$(cd -P "$(dirname "$_script_path")" && pwd)"
 cd "$ROOT"
+URLS_TXT="${ROOT}/urls.txt"
 
 # ログ: 環境変数 PIPELINE_LOG で直指定。PIPELINE_SLOT=1..5 で batch{1..5}.log（並列で log 衝突を避ける）
 if [[ -n "${PIPELINE_LOG:-}" ]]; then
@@ -43,11 +75,52 @@ else
   PIPELINE_LOG="${ROOT}/batch1.log"
 fi
 
-if [[ "${#}" -lt 1 ]] || [[ -z "${1:-}" ]]; then
-  usage
-fi
+RETRY_MODE=0
+VIDEO_REF=""
+while [[ "${#}" -gt 0 ]]; do
+  case "${1}" in
+    --retry)
+      shift
+      if [[ "${1:-}" != "1" ]]; then
+        echo "エラー: --retry には 1 を指定してください（例: $0 --retry 1）" >&2
+        exit 1
+      fi
+      RETRY_MODE=1
+      shift
+      ;;
+    -h | --help)
+      usage
+      ;;
+    -*)
+      echo "エラー: 不明なオプション: ${1}" >&2
+      usage
+      ;;
+    *)
+      if [[ -n "${VIDEO_REF}" ]]; then
+        echo "エラー: URL は 1 つだけ指定してください。" >&2
+        usage
+      fi
+      VIDEO_REF="${1}"
+      shift
+      ;;
+  esac
+done
 
-VIDEO_REF="$1"
+if [[ "${RETRY_MODE}" -eq 1 ]]; then
+  if [[ -n "${VIDEO_REF}" ]]; then
+    echo "エラー: --retry 1 のとき URL 引数は不要です。" >&2
+    exit 1
+  fi
+  if ! VIDEO_REF="$(_urls_txt_last_entry "${URLS_TXT}")"; then
+    echo "エラー: 再実行する URL がありません: ${URLS_TXT}" >&2
+    exit 1
+  fi
+  echo "再実行（urls.txt の最終行）: ${VIDEO_REF}" >&2
+elif [[ -z "${VIDEO_REF}" ]]; then
+  usage
+else
+  _append_urls_txt "${VIDEO_REF}"
+fi
 
 # 動作する Python を選ぶ（Windows の「python3」が Store スタブで venv 失敗する件は py -3 で回避）
 PYTHON_CMD_ARR=()
