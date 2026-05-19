@@ -9,7 +9,7 @@
 #
 # 実行例: ./run_pipeline.sh 'https://youtu.be/...'
 #   実行時に ${ROOT}/urls.txt へ URL を 1 行追記（失敗時の再実行用）
-#   ./run_pipeline.sh --retry 1 … urls.txt の最後の有効行（空行・# 除く）を再実行（追記しない）
+#   ./run_pipeline.sh --retry 1 … urls.txt の末尾から N 番目の有効行を再実行（1=最新、追記しない）
 # 並列用: ./run_pipeline1.sh URL … ./run_pipeline5.sh URL（batch1.log…batch5.log、c.f. PIPELINE_SLOT）
 # nohup あり: python をバックグラウンド起動し、シェルはすぐ戻る（進捗は PIPELINE_LOG / tail -f）。
 #
@@ -19,17 +19,18 @@ set -euo pipefail
 
 usage() {
   echo "使い方: $0 <YouTube_URL_または_video_id>" >&2
-  echo "       $0 --retry 1" >&2
+  echo "       $0 --retry <N>   （N=1 が最新、2 がその 1 つ前 …）" >&2
   echo "  例:   $0 'https://youtu.be/2UF8PHOIfrI?si=xxxx'" >&2
   echo "  通常実行時、リポジトリ直下の urls.txt に URL を 1 行追記します。" >&2
-  echo "  --retry 1 … urls.txt の最後の有効行を再実行（追記しません）。" >&2
+  echo "  --retry N … urls.txt の末尾から N 番目の有効行を再実行（追記しません）。" >&2
   exit 1
 }
 
-# urls.txt の末尾から、空行・# コメント以外の最後の行を返す（run_pipeline_urls.sh と同趣旨）
-_urls_txt_last_entry() {
-  local _f="$1" _line _last=""
-  if [[ ! -f "${_f}" ]]; then
+# urls.txt の末尾から N 番目の有効行を返す（N=1 が最新。空行・# は除外）
+_urls_txt_entry_from_end() {
+  local _f="$1" _n="$2" _line
+  local -a _entries=()
+  if [[ ! -f "${_f}" ]] || ! [[ "${_n}" =~ ^[1-9][0-9]*$ ]]; then
     return 1
   fi
   while IFS= read -r _line || [[ -n "${_line}" ]]; do
@@ -38,12 +39,12 @@ _urls_txt_last_entry() {
     _line="${_line%"${_line##*[![:space:]]}"}"
     [[ -z "${_line}" ]] && continue
     [[ "${_line}" == \#* ]] && continue
-    _last="${_line}"
+    _entries+=("${_line}")
   done < "${_f}"
-  if [[ -z "${_last}" ]]; then
+  if [[ "${#_entries[@]}" -lt "${_n}" ]]; then
     return 1
   fi
-  printf '%s' "${_last}"
+  printf '%s' "${_entries[$(( ${#_entries[@]} - _n ))]}"
 }
 
 _append_urls_txt() {
@@ -75,17 +76,17 @@ else
   PIPELINE_LOG="${ROOT}/batch1.log"
 fi
 
-RETRY_MODE=0
+RETRY_N=0
 VIDEO_REF=""
 while [[ "${#}" -gt 0 ]]; do
   case "${1}" in
     --retry)
       shift
-      if [[ "${1:-}" != "1" ]]; then
-        echo "エラー: --retry には 1 を指定してください（例: $0 --retry 1）" >&2
+      if [[ -z "${1:-}" ]] || ! [[ "${1}" =~ ^[1-9][0-9]*$ ]]; then
+        echo "エラー: --retry の後に 1 以上の番号を指定してください（例: $0 --retry 1）" >&2
         exit 1
       fi
-      RETRY_MODE=1
+      RETRY_N="${1}"
       shift
       ;;
     -h | --help)
@@ -106,16 +107,16 @@ while [[ "${#}" -gt 0 ]]; do
   esac
 done
 
-if [[ "${RETRY_MODE}" -eq 1 ]]; then
+if [[ "${RETRY_N}" -gt 0 ]]; then
   if [[ -n "${VIDEO_REF}" ]]; then
-    echo "エラー: --retry 1 のとき URL 引数は不要です。" >&2
+    echo "エラー: --retry ${RETRY_N} のとき URL 引数は不要です。" >&2
     exit 1
   fi
-  if ! VIDEO_REF="$(_urls_txt_last_entry "${URLS_TXT}")"; then
-    echo "エラー: 再実行する URL がありません: ${URLS_TXT}" >&2
+  if ! VIDEO_REF="$(_urls_txt_entry_from_end "${URLS_TXT}" "${RETRY_N}")"; then
+    echo "エラー: urls.txt に末尾から ${RETRY_N} 番目の URL がありません: ${URLS_TXT}" >&2
     exit 1
   fi
-  echo "再実行（urls.txt の最終行）: ${VIDEO_REF}" >&2
+  echo "再実行（urls.txt の末尾から ${RETRY_N} 番目）: ${VIDEO_REF}" >&2
 elif [[ -z "${VIDEO_REF}" ]]; then
   usage
 else
