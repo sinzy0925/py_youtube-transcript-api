@@ -8,10 +8,10 @@
 # API キー / メール: リポジトリの .env をシェルに取り込んでから a05 の引数（--skip-email）を決める
 #
 # 実行例: ./run_pipeline.sh 'https://youtu.be/...'
-#   実行時に ${ROOT}/urls.txt へ URL を 1 行追記（失敗時の再実行用）
-#   ./run_pipeline.sh --retry 1 … urls.txt の末尾から N 番目の有効行を再実行（1=最新、追記しない）
+#   urls.txt へ追記（--retry 用）。execute_urls.txt へ追記し、キューを上から直列実行（完了後に先頭行削除）。
+#   複数回連続実行してもプロンプトはすぐ戻る（ワーカーが 1 本だけ直列処理）。
+#   ./run_pipeline.sh --retry [N] … urls.txt から再実行（キューに入れない）
 # 並列用: ./run_pipeline1.sh URL … ./run_pipeline5.sh URL（batch1.log…batch5.log、c.f. PIPELINE_SLOT）
-# nohup あり: python をバックグラウンド起動し、シェルはすぐ戻る（進捗は PIPELINE_LOG / tail -f）。
 #
 # 環境変数 PIPELINE_OUTPUT_DIR … 設定時は a05 に -o として渡す（成果物ディレクトリ）。未設定時は a05 既定（日時_<id短縮>）。
 
@@ -21,8 +21,8 @@ usage() {
   echo "使い方: $0 <YouTube_URL_または_video_id>" >&2
   echo "       $0 --retry [N]  （省略時 N=1＝最新、2 がその 1 つ前 …）" >&2
   echo "  例:   $0 'https://youtu.be/2UF8PHOIfrI?si=xxxx'" >&2
-  echo "  通常実行時、リポジトリ直下の urls.txt に URL を 1 行追記します。" >&2
-  echo "  --retry [N] … urls.txt の末尾から N 番目の有効行を再実行（追記しません）。" >&2
+  echo "  通常実行時、urls.txt と execute_urls.txt に追記し、キューを直列処理します。" >&2
+  echo "  --retry [N] … urls.txt から再実行（キューに入れず即時 1 件）。" >&2
   exit 1
 }
 
@@ -53,6 +53,58 @@ _append_urls_txt() {
   echo "追記: ${URLS_TXT}" >&2
 }
 
+_execute_urls_trim_line() {
+  local _line="$1"
+  _line="${_line//$'\r'/}"
+  _line="${_line#"${_line%%[![:space:]]*}"}"
+  _line="${_line%"${_line##*[![:space:]]}"}"
+  printf '%s' "${_line}"
+}
+
+_append_execute_urls_txt() {
+  local _url="$1"
+  printf '%s\n' "${_url}" >>"${EXECUTE_URLS_TXT}"
+  echo "キュー追記: ${EXECUTE_URLS_TXT}" >&2
+}
+
+# 先頭の有効行（空行・# 除く）を表示
+_execute_urls_peek_first() {
+  local _f="$1" _line _t
+  [[ -f "${_f}" ]] || return 1
+  while IFS= read -r _line || [[ -n "${_line}" ]]; do
+    _t="$(_execute_urls_trim_line "${_line}")"
+    [[ -z "${_t}" ]] && continue
+    [[ "${_t}" == \#* ]] && continue
+    printf '%s' "${_t}"
+    return 0
+  done <"${_f}"
+  return 1
+}
+
+# 先頭の有効行を 1 行削除（残りを書き戻す）
+_execute_urls_pop_first() {
+  local _f="$1" _line _t _tmp _popped=0
+  [[ -f "${_f}" ]] || return 0
+  _tmp="$(mktemp "${_f}.XXXXXX")"
+  while IFS= read -r _line || [[ -n "${_line}" ]]; do
+    _t="$(_execute_urls_trim_line "${_line}")"
+    if [[ "${_popped}" -eq 0 ]]; then
+      if [[ -z "${_t}" ]] || [[ "${_t}" == \#* ]]; then
+        continue
+      fi
+      _popped=1
+      continue
+    fi
+    printf '%s\n' "${_line}" >>"${_tmp}"
+  done <"${_f}"
+  if [[ "${_popped}" -eq 1 ]]; then
+    mv -f "${_tmp}" "${_f}"
+  else
+    rm -f "${_tmp}"
+    : >"${_f}"
+  fi
+}
+
 # シンボリックリンク経由（例: ~/run_pipeline.sh → リポジトリ内）でもリポジトリルートに cd する
 _script_path="${BASH_SOURCE[0]:-$0}"
 while [[ -L "$_script_path" ]]; do
@@ -66,6 +118,12 @@ done
 ROOT="$(cd -P "$(dirname "$_script_path")" && pwd)"
 cd "$ROOT"
 URLS_TXT="${ROOT}/urls.txt"
+EXECUTE_URLS_TXT="${ROOT}/execute_urls.txt"
+EXECUTE_QUEUE_LOCK="${ROOT}/execute_urls.lock"
+EXECUTE_QUEUE_LOCK_DIR="${ROOT}/execute_urls.lock.d"
+EXECUTE_QUEUE_LOG="${ROOT}/execute_queue.log"
+EXECUTE_QUEUE_LOCK_MODE=""
+RUN_PIPELINE_SELF="${ROOT}/$(basename "${_script_path}")"
 
 # ログ: 環境変数 PIPELINE_LOG で直指定。PIPELINE_SLOT=1..5 で batch{1..5}.log（並列で log 衝突を避ける）
 if [[ -n "${PIPELINE_LOG:-}" ]]; then
@@ -77,9 +135,14 @@ else
 fi
 
 RETRY_N=0
+QUEUE_DRAIN=0
 VIDEO_REF=""
 while [[ "${#}" -gt 0 ]]; do
   case "${1}" in
+    --drain-execute-queue)
+      QUEUE_DRAIN=1
+      shift
+      ;;
     --retry)
       shift
       _retry_arg="${1:-}"
@@ -114,6 +177,11 @@ while [[ "${#}" -gt 0 ]]; do
   esac
 done
 
+if [[ "${QUEUE_DRAIN}" -eq 1 ]] && [[ -n "${VIDEO_REF}" ]]; then
+  echo "エラー: --drain-execute-queue に URL 引数は付けられません。" >&2
+  exit 1
+fi
+
 if [[ "${RETRY_N}" -gt 0 ]]; then
   if [[ -n "${VIDEO_REF}" ]]; then
     echo "エラー: --retry ${RETRY_N} のとき URL 引数は不要です。" >&2
@@ -124,10 +192,12 @@ if [[ "${RETRY_N}" -gt 0 ]]; then
     exit 1
   fi
   echo "再実行（urls.txt の末尾から ${RETRY_N} 番目）: ${VIDEO_REF}" >&2
-elif [[ -z "${VIDEO_REF}" ]]; then
-  usage
-else
+elif [[ "${QUEUE_DRAIN}" -eq 0 ]]; then
+  if [[ -z "${VIDEO_REF}" ]]; then
+    usage
+  fi
   _append_urls_txt "${VIDEO_REF}"
+  _append_execute_urls_txt "${VIDEO_REF}"
 fi
 
 # 動作する Python を選ぶ（Windows の「python3」が Store スタブで venv 失敗する件は py -3 で回避）
@@ -320,23 +390,108 @@ else
   echo "メール送信: MAIL_TO または TO_EMAIL が設定されているため --skip-email しません"
 fi
 
-echo "=== パイプライン実行: ${VIDEO_REF} ==="
-
 _log_dir="$(dirname "${PIPELINE_LOG}")"
 if [[ ! -d "${_log_dir}" ]]; then
   mkdir -p "${_log_dir}"
 fi
 
-if command -v nohup >/dev/null 2>&1; then
-  echo "nohup バックグラウンド: ログ → ${PIPELINE_LOG}（python -u）" >&2
-  nohup "${VENV_PY}" -u "${ARGS[@]}" "${VIDEO_REF}" >"${PIPELINE_LOG}" 2>&1 &
-  _bg_pid=$!
-  echo "起動しました PID ${_bg_pid}。進捗: cat ${PIPELINE_LOG}" >&2
+# 1 件を起動して終了まで待つ（キュー直列用）
+_run_pipeline_wait() {
+  local _url="$1"
+  echo "=== パイプライン実行（直列・完了待ち）: ${_url} ===" >&2
+  if ! "${VENV_PY}" -u "${ARGS[@]}" "${_url}" >"${PIPELINE_LOG}" 2>&1; then
+    echo "警告: パイプライン終了コード非0: ${_url} （ログ: ${PIPELINE_LOG}）" >&2
+    return 1
+  fi
+  return 0
+}
+
+# --retry など即時 1 件（従来どおりバックグラウンド）
+_run_pipeline_background() {
+  local _url="$1"
+  echo "=== パイプライン実行: ${_url} ===" >&2
+  if command -v nohup >/dev/null 2>&1; then
+    echo "nohup バックグラウンド: ログ → ${PIPELINE_LOG}（python -u）" >&2
+    nohup "${VENV_PY}" -u "${ARGS[@]}" "${_url}" >"${PIPELINE_LOG}" 2>&1 &
+    echo "起動しました PID $!。進捗: cat ${PIPELINE_LOG}" >&2
+    return 0
+  fi
+  echo "注意: nohup がありません。バックグラウンド起動 → ${PIPELINE_LOG}" >&2
+  "${VENV_PY}" -u "${ARGS[@]}" "${_url}" >"${PIPELINE_LOG}" 2>&1 &
+  echo "起動しました PID $!。進捗: cat ${PIPELINE_LOG}" >&2
+}
+
+# キューワーカー用ロック（Linux: flock / Git Bash・Windows: mkdir）
+_acquire_execute_queue_lock() {
+  if command -v flock >/dev/null 2>&1; then
+    exec 9>>"${EXECUTE_QUEUE_LOCK}"
+    if flock -n 9; then
+      EXECUTE_QUEUE_LOCK_MODE=flock
+      trap '_release_execute_queue_lock' EXIT
+      return 0
+    fi
+    return 1
+  fi
+  if mkdir "${EXECUTE_QUEUE_LOCK_DIR}" 2>/dev/null; then
+    echo "$$" >"${EXECUTE_QUEUE_LOCK_DIR}/pid"
+    EXECUTE_QUEUE_LOCK_MODE=mkdir
+    trap '_release_execute_queue_lock' EXIT
+    return 0
+  fi
+  return 1
+}
+
+_release_execute_queue_lock() {
+  case "${EXECUTE_QUEUE_LOCK_MODE}" in
+    flock)
+      flock -u 9 2>/dev/null || true
+      ;;
+    mkdir)
+      rm -rf "${EXECUTE_QUEUE_LOCK_DIR}"
+      ;;
+  esac
+  EXECUTE_QUEUE_LOCK_MODE=""
+}
+
+# execute_urls.txt を上から直列処理（ワーカー 1 本）
+_drain_execute_urls_queue() {
+  if ! _acquire_execute_queue_lock; then
+    echo "キュー: 別ワーカーが処理中のため終了します。" >&2
+    exit 0
+  fi
+
+  echo "=== execute_urls キュー処理開始 ===" >&2
+  local _url _n=0
+  while _url="$(_execute_urls_peek_first "${EXECUTE_URLS_TXT}")"; do
+    _n=$((_n + 1))
+    echo "--- キュー [${_n}] ${_url} ---" >&2
+    _run_pipeline_wait "${_url}" || true
+    _execute_urls_pop_first "${EXECUTE_URLS_TXT}"
+    echo "キューから先頭行を削除しました: ${EXECUTE_URLS_TXT}" >&2
+  done
+  echo "=== execute_urls キュー処理完了（処理件数: ${_n}） ===" >&2
+}
+
+_spawn_execute_queue_drainer() {
+  if command -v nohup >/dev/null 2>&1; then
+    nohup bash "${RUN_PIPELINE_SELF}" --drain-execute-queue >>"${EXECUTE_QUEUE_LOG}" 2>&1 &
+    echo "キューワーカー起動 PID $!。進捗: cat ${EXECUTE_QUEUE_LOG} / cat ${PIPELINE_LOG}" >&2
+  else
+    bash "${RUN_PIPELINE_SELF}" --drain-execute-queue >>"${EXECUTE_QUEUE_LOG}" 2>&1 &
+    echo "キューワーカー起動 PID $!。進捗: cat ${EXECUTE_QUEUE_LOG}" >&2
+  fi
+}
+
+if [[ "${QUEUE_DRAIN}" -eq 1 ]]; then
+  _drain_execute_urls_queue
   exit 0
 fi
 
-echo "注意: nohup がありません。バックグラウンド起動（端末を閉じると停止しやすい）→ ${PIPELINE_LOG}" >&2
-"${VENV_PY}" -u "${ARGS[@]}" "${VIDEO_REF}" >"${PIPELINE_LOG}" 2>&1 &
-_bg_pid=$!
-echo "起動しました PID ${_bg_pid}。進捗: cat ${PIPELINE_LOG}" >&2
+if [[ "${RETRY_N}" -gt 0 ]]; then
+  _run_pipeline_background "${VIDEO_REF}"
+  exit 0
+fi
+
+echo "キューに登録しました（直列処理はバックグラウンド）: ${VIDEO_REF}" >&2
+_spawn_execute_queue_drainer
 exit 0
