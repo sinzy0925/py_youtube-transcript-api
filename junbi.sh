@@ -29,6 +29,7 @@ AA_LINE="alias aa='./run_pipeline.sh \"'"
 BB_LINE="alias bb='cat ~/py_youtube-transcript-api/batch1.log'"
 # retry のみ → --retry（省略時 1＝最新）。retry 2 → --retry 2
 CC_LINE="alias retry='./run_pipeline.sh --retry'"
+DD_LINE="alias cc='cat ~/py_youtube-transcript-api/execute_urls.txt'"
 
 AA=0
 
@@ -63,12 +64,21 @@ elif [[ ! -f "${BASHRC}" ]] || ! grep -Fxq "${CC_LINE}" "${BASHRC}" 2>/dev/null;
   echo "追記: ${BASHRC} に ${CC_LINE}"
 fi
 
+if [[ ! -f "${BASHRC}" ]] || ! grep -Fxq "${DD_LINE}" "${BASHRC}" 2>/dev/null; then
+  AA=4
+  printf '%s\n' "${DD_LINE}" >> "${BASHRC}"
+  echo "追記: ${BASHRC} に ${DD_LINE}"
+else
+  echo "${BASHRC} に既に ${DD_LINE} があります。スキップ。"
+fi
+
 if [[ -f "${BASHRC}" ]] && [[ "${AA}" != 0 ]] ; then
   # shellcheck source=/dev/null
   source "${BASHRC}"
   echo "反映: 現在のシェルに source ${BASHRC} しました。"
-  echo "新規シェルから aa / bb / retry コマンドが使えます。"
+  echo "新規シェルから aa / bb / retry / cc コマンドが使えます。"
   echo 'aa実行後、YoutubeのURLを貼り付け、最後に半角の"を付けてEnterを押すと実行されます。'
   echo "bb実行後、batch1.logを表示します。"
   echo 'retry のみ Enter で最新を再実行。retry 2 で 1 つ前…。'
+  echo "cc実行後、execute_urls.txtを表示します。"
 fi
