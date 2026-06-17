@@ -7,6 +7,8 @@
 #
 # Windows (Git Bash) / WSL / Linux / Cloud Shell 共通
 
+rm -f batch*.log
+
 set -euo pipefail
 
 _script_path="${BASH_SOURCE[0]:-$0}"
