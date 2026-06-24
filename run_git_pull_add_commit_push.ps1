@@ -1,9 +1,9 @@
-echo "`npy_youtube-transcript-api専用です`n"
-echo "`ncd ~\py_youtube-transcript-api`n"
+echo "`npy_youtube-transcript-api専用です"
+echo "`ncd ~\py_youtube-transcript-api"
 cd ~\py_youtube-transcript-api
-echo "`n.venv/scripts/activate`n"
+echo "`n.venv/scripts/activate"
 .venv/scripts/activate
-echo "`npython build_html_site.py`n"
+echo "`npython build_html_site.py"
 python build_html_site.py
 
 
