@@ -9,8 +9,9 @@ YouTube の動画を指定すると、**字幕を取得し、Gemini で要約し
 ### よくある使い方（3 パターン）
 
 1. **1 本だけ** … Cloud Shell などで `.env` を用意したうえで、`./run_pipeline.sh 'https://youtu.be/…'` を実行すると、**要約などがメールで届く**（`MAIL_TO` / `TO_EMAIL` と Gmail 送信設定がある場合。無ければ `--skip-email` 相当でファイルのみ）。
-2. **URL を複数** … `urls.txt` に **1 行 1 URL**（`#` 始まりと空行は無視）で書き、`./run_pipeline_urls.sh` または `./run_pipeline_urls.sh /path/to/urls.txt` で **上から順に** `run_pipeline.sh` が走り、**それぞれメールで届く**（起動間隔は `URLS_PIPELINE_GAP_SEC`、既定 65 秒）。
+2. **URL を複数** … `urls.txt` に **1 行 1 URL**（`#` 始まりと空行は無視）で書き、`./run_pipeline_urls.sh` または `./run_pipeline_urls.sh /path/to/urls.txt` で **上から順に** `run_pipeline.sh` が走り、**それぞれメールで届く**（起動間隔は `URLS_PIPELINE_GAP_SEC`、既定 65 秒）。`BUILD_HTML_SITE=1` なら **全件のキュー完了後に `docs/` を1回生成**（後述）。
 3. **チャンネル単位** … `./run_channel.sh --fromto 0:10 --url 'https://www.youtube.com/@…'` のように **`--fromto` で範囲**を指定すると、その範囲の動画を **順番に**要約パイプラインへ回す（`b01` はチャンネル「動画」タブ相当の **先頭を 0** とした添字で、**多くのチャンネルでは新しい動画が上のため 0 が最新側**。範囲は両端含む。例 `0:10` は 11 本）。
+4. **要約を Web 公開** … `output/` の要約から **`docs/`** に静的 HTML を生成し、**GitHub Pages** で公開（`build_html_site.py` / `BUILD_HTML_SITE=1`）。後述。
 
 **Google Cloud Shell**（Google アカウントがあれば無料枠で使える）で動かす手順を下にまとめています。ローカルは **Git Bash / WSL / Linux** などの Bash が使える環境を想定しています。
 
@@ -113,6 +114,7 @@ GOOGLE_API_KEY_3="あなたのAPIキー3"
 | 真実度の検索グラウンディング | 既定ON。`TRUTH_ASSESSMENT_GROUNDING=0` でオフ可 |
 | 送信先メール | `MAIL_TO` または `TO_EMAIL` |
 | Gmail 送信 | `GMAIL_USER`（Gmail 全文）、`GMAIL_APP_PASSWORD`（16 文字） |
+| 要約サイト生成 | `BUILD_HTML_SITE=1` … パイプライン完了後に `docs/` を再生成（`run_pipeline_urls.sh` は全件キュー完了後に1回） |
 
 ## スクリプトの流れ（ファイル名の数字が処理順の目安）
 
@@ -123,6 +125,7 @@ GOOGLE_API_KEY_3="あなたのAPIキー3"
 | **a03** `a03_gemini_summary.py` | Gemini で要約し `summary.txt` 用テキストを生成 |
 | **a04** `a04_send_result_email.py` | Gmail（SMTP）で成果物を送信 |
 | **a05** `a05_pipeline_youtube_to_email.py` | 上記を 1 本で実行 |
+| **build_html_site** `build_html_site.py` | `output/` の要約から `docs/` 静的サイトを生成（GitHub Pages 用） |
 
 一括（推奨）:
 
@@ -150,6 +153,7 @@ chmod +x run_pipeline.sh
 - ログ **`batch1.log` は `.gitignore` 済み**です。別ファイルにしたい場合は `run_pipeline.sh` 内の `PIPELINE_LOG` を編集してください。
 - Windows では **`py -3`** を優先して仮想環境を作ります。Python が Store のスタブだけの場合は [python.org](https://www.python.org/downloads/) 版のインストールを推奨します。
 - 仮想環境の Python は **`.venv/Scripts/python.exe`（Windows）または `.venv/bin/python`（Unix）を直接指定**しており、`activate` は不要です。
+- **`BUILD_HTML_SITE=1`**（`.env` 可）… 1 本の処理完了後に `docs/` を再生成。詳細は **`build_html_site.py` と GitHub Pages** を参照。
 
 ### `run_pipeline_urls.sh`（URL リストを順に `run_pipeline.sh`）
 
@@ -172,6 +176,92 @@ https://www.youtube.com/watch?v=DhySWbjgvIQ
 
 - **間隔**: 環境変数 **`URLS_PIPELINE_GAP_SEC`**（秒、既定 **65**）。直前の `run_pipeline` 起動から指定秒以上空けてから次を起動します。
 - 空行と **`#` で始まる行**は無視されます。
+- **`BUILD_HTML_SITE=1`**（`.env` 可）… 全 URL の **キュー処理が終わったあと**、`docs/` を **1 回だけ**再生成します（各 `run_pipeline` ごとの再生成は行いません）。詳細は後述の **`build_html_site.py` と GitHub Pages** を参照。
+
+### `build_html_site.py` と GitHub Pages（要約の Web 公開）
+
+`output/` に溜まった要約（`summary.txt` / `video_info.json`）から、**GitHub Pages 用の静的サイト**を `docs/` に生成します。
+
+**生成される構成**
+
+```text
+docs/
+  index.html              # 要約一覧（カテゴリタグ付き）
+  contents/
+    <video_id>.html       # 動画ごとの要約ページ（例: AwQYphhyPZs.html）
+```
+
+- **`output/`** は `.gitignore` 済み（ローカルのみ）。**公開するのは `docs/`** をコミットして push する想定です。
+- 実行のたびに **`output/` 全体を走査して `docs/` を上書き再生成**します（差分更新ではありません）。
+- 同じ `video_id` のフォルダが複数ある場合は **最新の1件だけ**を採用します。
+- 一覧の **カテゴリタグ**（投資・不動産・年金・税制・AI など）は **`categories.yaml`** のキーワードで自動判定します（最大2個）。カテゴリの追加・キーワード調整はこのファイルを編集してください。
+
+#### 単体で `docs/` を生成する
+
+仮想環境を有効にしたうえで、リポジトリ直下で:
+
+```bash
+python build_html_site.py
+```
+
+| オプション | 既定 | 説明 |
+|------------|------|------|
+| `--output-root` | `output` | 要約フォルダの親ディレクトリ |
+| `--html-dir` | `docs` | HTML の出力先 |
+| `--archive-dir DIR` | なし（複数可） | 追加で含める成果物フォルダ |
+
+`run_pipeline.sh` 経由でも同じ処理が走ります（`.venv` の作成・`pip install` 込み）:
+
+```bash
+./run_pipeline.sh --finish-urls-batch-html
+```
+
+（内部で `build_html_site.py` を実行。`BUILD_HTML_SITE=1` が無いとスキップします。）
+
+#### パイプラインと連携する（自動生成）
+
+`.env` に次を書くと、要約完了後に `docs/` を更新できます。
+
+```env
+BUILD_HTML_SITE=1
+```
+
+| 実行方法 | `docs/` を更新するタイミング |
+|----------|------------------------------|
+| `./run_pipeline.sh 'https://youtu.be/…'` | **その1本**の処理完了後 |
+| `./run_pipeline_urls.sh urls_mylist.txt` | **リスト全件のキュー完了後に1回** |
+
+手動で Python を叩かなくても、上記のタイミングで `build_html_site.py` 相当が動きます。
+
+#### GitHub Pages で公開する（初回セットアップ）
+
+1. **要約を生成** … いつも通り `run_pipeline.sh` などで `output/` に要約を作る。
+2. **`docs/` を生成** … `python build_html_site.py`、または `BUILD_HTML_SITE=1` でパイプライン実行。
+3. **Git に push** … `docs/` と `categories.yaml` などをコミットして `main` に push。
+
+```bash
+git add docs/ categories.yaml
+git commit -m "Update summary site"
+git push origin main
+```
+
+4. **GitHub で Pages を有効化** … リポジトリの **Settings → Pages** で:
+   - **Source**: Deploy from a branch
+   - **Branch**: `main`
+   - **Folder**: **`/docs`**
+
+5. **公開 URL**（リポジトリ名が `py_youtube-transcript-api` の例）:
+
+```text
+https://sinzy0925.github.io/py_youtube-transcript-api/
+```
+
+数分以内に反映されます。以降は要約を更新するたびに **`build_html_site.py`（または `BUILD_HTML_SITE=1`）→ `git add docs/` → push** でサイトを更新できます。
+
+**注意**
+
+- リポジトリが **Public** の場合、要約テキストが誰でも閲覧できます。`.env` や `output/` は gitignore 済みですが、**公開したくない要約は `docs/` に含めない**でください。
+- `docs/contents/` に古い HTML が残ることがあります（`output/` に無い `video_id` のファイルは自動削除しません）。気になる場合は `docs/contents/` を一度整理してから再生成してください。
 
 ### `run_channel.sh`（チャンネル単位で videoid 取得 → 各動画へ `run_pipeline.sh`）
 
@@ -218,6 +308,7 @@ chmod +x run_channel.sh
 - `requests`（oEmbed 等）
 - `python-dotenv`（`.env`）
 - `yt-dlp`（`run_channel.sh` / `b01_channel_to_videoid.py` でチャンネルから videoid を列挙する際）
+- `PyYAML`（`build_html_site.py` が `categories.yaml` を読む際）
 
 ## 注意
 
