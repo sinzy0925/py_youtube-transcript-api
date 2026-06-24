@@ -47,6 +47,7 @@ from a01_get_transcript import (
 )
 from a03_gemini_summary import SummaryToFileResult, generate_summary_to_file
 from a04_send_result_email import send_result_email, write_summary_unavailable_placeholder
+from build_html_site import build_html_site
 
 PYTHON = os.path.basename(__file__)
 DEFAULT_VIDEO = "https://www.youtube.com/watch?v=8W6Qn2hNrAM"
@@ -159,6 +160,24 @@ def _print_pipeline_run_footer(
         print(f"[メール送信]{'成功' if ok_m else '失敗'}　To={to_email!r}")
 
 
+def _env_build_html_site() -> bool:
+    v = (os.getenv("BUILD_HTML_SITE") or "").strip().lower()
+    return v in ("1", "true", "yes", "on")
+
+
+def _maybe_build_html_site(archive_dir: str) -> None:
+    output_root = os.path.dirname(os.path.abspath(archive_dir)) or "output"
+    try:
+        result = build_html_site(output_root, "docs", archive_dirs=[archive_dir])
+    except Exception as e:
+        print(f"[HTML サイト]失敗: {e} : ({PYTHON})", file=sys.stderr)
+        return
+    print(
+        f"[HTML サイト]成功 {result['pages_written']} 件 → {result['html_dir']} "
+        f"（index: {result['index_path']}）"
+    )
+
+
 def run_pipeline(
     video_ref: str,
     archive_dir: str,
@@ -168,6 +187,7 @@ def run_pipeline(
     prompt_text: str,
     skip_email: bool,
     skip_truth_assessment: bool,
+    build_html: bool = False,
 ) -> int:
     print(f"=== パイプライン開始 : ({PYTHON}) ===")
     os.makedirs(archive_dir, exist_ok=True)
@@ -212,23 +232,19 @@ def run_pipeline(
     # --- (3) メール: a04 ---
     if skip_email:
         print(f"[3/3] メール送信をスキップ (--skip-email) : ({PYTHON})")
-        print(f"=== 完了（成果物は {archive_dir}） : ({PYTHON}) ===")
-        _print_pipeline_run_footer(
-            sum_res,
-            skip_email=True,
-            to_email=to_email,
-            mail_ok=None,
-        )
-        return 0
+    else:
+        print(f"[3/3] メール送信 To={to_email!r}")
+        mail_ok = send_result_email(archive_dir, to_email, watch_url)
 
-    print(f"[3/3] メール送信 To={to_email!r}")
-    mail_ok = send_result_email(archive_dir, to_email, watch_url)
-    print(f"=== 完了 : ({PYTHON}) ===")
+    if build_html:
+        _maybe_build_html_site(archive_dir)
+
+    print(f"=== 完了（成果物は {archive_dir}） : ({PYTHON}) ===" if skip_email else f"=== 完了 : ({PYTHON}) ===")
     _print_pipeline_run_footer(
         sum_res,
-        skip_email=False,
+        skip_email=skip_email,
         to_email=to_email,
-        mail_ok=mail_ok,
+        mail_ok=None if skip_email else mail_ok,
     )
     print(f"=== [終了] 成果物は {archive_dir} です。")
     print(f"=== [終了] ===")
@@ -285,6 +301,11 @@ def main() -> None:
         action="store_true",
         help="真実度（目安）の追加 API 呼び出しをせず、要約のみ行う",
     )
+    p.add_argument(
+        "--build-html",
+        action="store_true",
+        help="完了後に build_html_site で docs/ を生成（BUILD_HTML_SITE=1 でも有効）",
+    )
     args = p.parse_args()
 
     to_email = (args.to_email or os.getenv("MAIL_TO") or os.getenv("TO_EMAIL") or "").strip()
@@ -307,6 +328,8 @@ def main() -> None:
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         out = os.path.join("output", f"{ts}_{vid[:8]}")
 
+    build_html = args.build_html or _env_build_html_site()
+
     code = run_pipeline(
         args.video,
         out,
@@ -316,6 +339,7 @@ def main() -> None:
         args.prompt_text,
         args.skip_email,
         args.skip_truth_assessment,
+        build_html,
     )
     sys.exit(code)
 
