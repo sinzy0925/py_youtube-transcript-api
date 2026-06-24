@@ -7,7 +7,7 @@ echo "`npython build_html_site.py"
 python build_html_site.py
 
 
-echo "`ngit pull`n"
+echo "`n---------------------------------`ngit pull`n---------------------------------`n"
 git pull
 echo "`ngit add commit push`n"
 git add .
