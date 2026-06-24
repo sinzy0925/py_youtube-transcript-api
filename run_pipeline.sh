@@ -23,6 +23,7 @@ usage() {
   echo "  例:   $0 'https://youtu.be/2UF8PHOIfrI?si=xxxx'" >&2
   echo "  通常実行時、urls.txt と execute_urls.txt に追記し、キューを直列処理します。" >&2
   echo "  --retry [N] … urls.txt から再実行（キューに入れず即時 1 件）。" >&2
+  echo "  --finish-urls-batch-html … run_pipeline_urls.sh 用。キュー完了後に docs/ を1回生成（要 BUILD_HTML_SITE）。" >&2
   exit 1
 }
 
@@ -105,6 +106,27 @@ _execute_urls_pop_first() {
   fi
 }
 
+_execute_urls_has_pending() {
+  _execute_urls_peek_first "${EXECUTE_URLS_TXT}" >/dev/null 2>&1
+}
+
+_is_execute_queue_worker_active() {
+  [[ -d "${EXECUTE_QUEUE_LOCK_DIR}" ]]
+}
+
+_wait_execute_queue_idle() {
+  echo "=== execute_urls キュー完了を待機 ===" >&2
+  local _tick=0
+  while _execute_urls_has_pending || _is_execute_queue_worker_active; do
+    _tick=$((_tick + 1))
+    if [[ $((_tick % 4)) -eq 0 ]]; then
+      echo "  待機中…（キュー処理の完了を待っています）" >&2
+    fi
+    sleep 15
+  done
+  echo "=== execute_urls キュー待機完了 ===" >&2
+}
+
 # シンボリックリンク経由（例: ~/run_pipeline.sh → リポジトリ内）でもリポジトリルートに cd する
 _script_path="${BASH_SOURCE[0]:-$0}"
 while [[ -L "$_script_path" ]]; do
@@ -136,11 +158,16 @@ fi
 
 RETRY_N=0
 QUEUE_DRAIN=0
+FINISH_URLS_BATCH_HTML=0
 VIDEO_REF=""
 while [[ "${#}" -gt 0 ]]; do
   case "${1}" in
     --drain-execute-queue)
       QUEUE_DRAIN=1
+      shift
+      ;;
+    --finish-urls-batch-html)
+      FINISH_URLS_BATCH_HTML=1
       shift
       ;;
     --retry)
@@ -182,6 +209,13 @@ if [[ "${QUEUE_DRAIN}" -eq 1 ]] && [[ -n "${VIDEO_REF}" ]]; then
   exit 1
 fi
 
+if [[ "${FINISH_URLS_BATCH_HTML}" -eq 1 ]]; then
+  if [[ -n "${VIDEO_REF}" ]] || [[ "${RETRY_N}" -gt 0 ]] || [[ "${QUEUE_DRAIN}" -eq 1 ]]; then
+    echo "エラー: --finish-urls-batch-html に URL や他のモード引数は付けられません。" >&2
+    exit 1
+  fi
+fi
+
 if [[ "${RETRY_N}" -gt 0 ]]; then
   if [[ -n "${VIDEO_REF}" ]]; then
     echo "エラー: --retry ${RETRY_N} のとき URL 引数は不要です。" >&2
@@ -192,7 +226,7 @@ if [[ "${RETRY_N}" -gt 0 ]]; then
     exit 1
   fi
   echo "再実行（urls.txt の末尾から ${RETRY_N} 番目）: ${VIDEO_REF}" >&2
-elif [[ "${QUEUE_DRAIN}" -eq 0 ]]; then
+elif [[ "${QUEUE_DRAIN}" -eq 0 ]] && [[ "${FINISH_URLS_BATCH_HTML}" -eq 0 ]]; then
   if [[ -z "${VIDEO_REF}" ]]; then
     usage
   fi
@@ -388,6 +422,24 @@ if [[ -z "${MAIL_TO:-}" ]] && [[ -z "${TO_EMAIL:-}" ]]; then
   ARGS+=(--skip-email)
 else
   echo "メール送信: MAIL_TO または TO_EMAIL が設定されているため --skip-email しません"
+fi
+if [[ "${PIPELINE_SKIP_BUILD_HTML:-}" != "1" ]] && [[ -n "${BUILD_HTML_SITE:-}" ]] && [[ "${BUILD_HTML_SITE}" != "0" ]]; then
+  ARGS+=(--build-html)
+  echo "HTML サイト: BUILD_HTML_SITE が有効のため --build-html を付与します"
+fi
+
+if [[ "${FINISH_URLS_BATCH_HTML}" -eq 1 ]]; then
+  if [[ -z "${BUILD_HTML_SITE:-}" ]] || [[ "${BUILD_HTML_SITE}" == "0" ]]; then
+    echo "BUILD_HTML_SITE 未設定のため docs 生成をスキップします。" >&2
+    exit 0
+  fi
+  _wait_execute_queue_idle
+  echo "=== docs/ 静的サイト生成（URLリスト一括完了後） ===" >&2
+  if ! "${VENV_PY}" -u build_html_site.py; then
+    echo "エラー: build_html_site.py に失敗しました。" >&2
+    exit 1
+  fi
+  exit 0
 fi
 
 _log_dir="$(dirname "${PIPELINE_LOG}")"

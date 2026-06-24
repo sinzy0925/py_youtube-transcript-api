@@ -5,6 +5,8 @@
 #   ./run_pipeline_urls.sh
 #   ./run_pipeline_urls.sh ~/my_urls.txt
 #
+# BUILD_HTML_SITE=1（.env 可）のとき、全 URL のキュー処理完了後に docs/ を1回生成する。
+# 各 run_pipeline 起動時の docs 再生成は行わない（PIPELINE_SKIP_BUILD_HTML=1）。
 # Windows (Git Bash) / WSL / Linux / Cloud Shell 共通
 
 rm -f batch*.log
@@ -28,6 +30,7 @@ usage() {
   echo "  既定のリスト: ${ROOT}/urls.txt" >&2
   echo "  1行1URL。空行と # で始まる行は無視。" >&2
   echo "  間隔: 環境変数 URLS_PIPELINE_GAP_SEC（秒、既定 65）※各 run_pipeline 起動の間" >&2
+  echo "  BUILD_HTML_SITE=1 … 全件キュー完了後に docs/ を1回生成（.env 可）" >&2
   exit 1
 }
 
@@ -81,7 +84,7 @@ while IFS= read -r line || [[ -n "${line}" ]]; do
   PIPELINE_LOG="${ROOT}/batch_urls_${idx}.log"
   echo "=== [${idx}] ${RUN_PIPELINE[*]} （ログ: batch_urls_${idx}.log） ==="
   echo "${url}"
-  PIPELINE_LOG="${PIPELINE_LOG}" "${RUN_PIPELINE[@]}" "${url}"
+  PIPELINE_SKIP_BUILD_HTML=1 PIPELINE_LOG="${PIPELINE_LOG}" "${RUN_PIPELINE[@]}" "${url}"
 done < "${URLS_FILE}"
 
 if [[ "${idx}" -eq 0 ]]; then
@@ -90,3 +93,4 @@ if [[ "${idx}" -eq 0 ]]; then
 fi
 
 echo "=== URL リスト連続起動 完了: ${idx} 件の run_pipeline を起動しました ==="
+bash "${ROOT}/run_pipeline.sh" --finish-urls-batch-html

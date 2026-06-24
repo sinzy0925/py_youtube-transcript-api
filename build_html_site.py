@@ -110,6 +110,34 @@ a { color: inherit; text-decoration: none; }
   align-items: start;
   padding: 0.85rem 1rem;
 }
+.index-item-main {
+  min-width: 0;
+}
+.index-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin-bottom: 0.4rem;
+}
+.index-tag {
+  display: inline-block;
+  font-size: 0.7rem;
+  line-height: 1.2;
+  padding: 0.18rem 0.5rem;
+  border-radius: 999px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  background: #e8eaed;
+  color: #3c4043;
+}
+.index-tag[data-cat="投資"] { background: #e8f0fe; color: #1967d2; }
+.index-tag[data-cat="不動産"] { background: #e6f4ea; color: #137333; }
+.index-tag[data-cat="年金"] { background: #fce8e6; color: #c5221f; }
+.index-tag[data-cat="税制"] { background: #fef7e0; color: #b06000; }
+.index-tag[data-cat="AI"] { background: #f3e8fd; color: #7b1fa2; }
+.index-tag[data-cat="学習"] { background: #e0f7fa; color: #00695c; }
+.index-tag[data-cat="ライフハック"] { background: #fff3e0; color: #e65100; }
+.index-tag[data-cat="社会・時事"] { background: #f1f3f4; color: #5f6368; }
 .index-item-date {
   display: block;
   font-size: 0.78rem;
@@ -166,6 +194,13 @@ a { color: inherit; text-decoration: none; }
 
 
 @dataclass(frozen=True)
+class CategoryConfig:
+    max_tags: int
+    summary_preview_chars: int
+    categories: dict[str, list[str]]
+
+
+@dataclass(frozen=True)
 class ArchiveEntry:
     archive_dir: Path
     video_id: str
@@ -173,6 +208,101 @@ class ArchiveEntry:
     watch_url: str
     sort_key: str
     summary_path: Path
+
+
+def _script_root() -> Path:
+    return Path(__file__).resolve().parent
+
+
+def _load_category_config(path: Optional[Path] = None) -> CategoryConfig:
+    cfg_path = path or (_script_root() / "categories.yaml")
+    max_tags = 2
+    summary_preview_chars = 500
+    categories: dict[str, list[str]] = {}
+
+    if not cfg_path.is_file():
+        return CategoryConfig(max_tags, summary_preview_chars, categories)
+
+    try:
+        import yaml
+    except ImportError:
+        print(
+            f"警告: PyYAML がありません。pip install PyYAML でカテゴリタグを有効化できます。 : ({PYTHON})",
+            file=sys.stderr,
+        )
+        return CategoryConfig(max_tags, summary_preview_chars, categories)
+
+    try:
+        raw = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as e:
+        print(f"警告: categories.yaml の読み込みに失敗: {e} : ({PYTHON})", file=sys.stderr)
+        return CategoryConfig(max_tags, summary_preview_chars, categories)
+
+    if not isinstance(raw, dict):
+        return CategoryConfig(max_tags, summary_preview_chars, categories)
+
+    if isinstance(raw.get("max_tags"), int) and raw["max_tags"] > 0:
+        max_tags = raw["max_tags"]
+    if isinstance(raw.get("summary_preview_chars"), int) and raw["summary_preview_chars"] > 0:
+        summary_preview_chars = raw["summary_preview_chars"]
+
+    raw_cats = raw.get("categories")
+    if isinstance(raw_cats, dict):
+        for name, keywords in raw_cats.items():
+            cat = str(name).strip()
+            if not cat:
+                continue
+            if isinstance(keywords, list):
+                categories[cat] = [str(k).strip() for k in keywords if str(k).strip()]
+            elif isinstance(keywords, str) and keywords.strip():
+                categories[cat] = [keywords.strip()]
+
+    return CategoryConfig(max_tags, summary_preview_chars, categories)
+
+
+def _classification_text(entry: ArchiveEntry, preview_chars: int) -> str:
+    parts = [entry.title]
+    try:
+        text = entry.summary_path.read_text(encoding="utf-8")
+        _title, _url, body = _parse_summary_header(text)
+        if not body.strip():
+            body = text
+        parts.append(body[:preview_chars])
+    except OSError:
+        pass
+    return _sanitize_nbsp_and_ws("\n".join(parts))
+
+
+def _classify_tags(text: str, config: CategoryConfig) -> list[str]:
+    if not text.strip() or not config.categories:
+        return []
+
+    scores: dict[str, int] = {}
+    lower = text.casefold()
+    for cat, keywords in config.categories.items():
+        score = 0
+        for kw in keywords:
+            if not kw:
+                continue
+            kw_cf = kw.casefold()
+            count = lower.count(kw_cf)
+            if count:
+                score += count * (3 if len(kw) >= 4 else 2)
+        if score > 0:
+            scores[cat] = score
+
+    ranked = sorted(scores.items(), key=lambda x: (-x[1], x[0]))
+    return [cat for cat, _ in ranked[: config.max_tags]]
+
+
+def _render_index_tags(tags: list[str]) -> str:
+    if not tags:
+        return ""
+    pills = "".join(
+        f'<span class="index-tag" data-cat="{html.escape(tag)}">{html.escape(tag)}</span>'
+        for tag in tags
+    )
+    return f'<div class="index-tags">{pills}</div>'
 
 
 def _video_watch_url(video_id: str) -> str:
@@ -345,13 +475,21 @@ def _format_index_date_parts(sort_key: str) -> tuple[str, str, str]:
     )
 
 
-def _write_index(entries: list[ArchiveEntry], html_dir: Path) -> Path:
+def _write_index(
+    entries: list[ArchiveEntry],
+    html_dir: Path,
+    *,
+    category_config: Optional[CategoryConfig] = None,
+) -> Path:
     html_dir.mkdir(parents=True, exist_ok=True)
     out_path = html_dir / "index.html"
+    cat_cfg = category_config or _load_category_config()
     items: list[str] = []
     for entry in entries:
         title_esc = html.escape(entry.title)
         href = html.escape(f"contents/{entry.video_id}.html", quote=True)
+        tags = _classify_tags(_classification_text(entry, cat_cfg.summary_preview_chars), cat_cfg)
+        tags_html = _render_index_tags(tags)
         day, clock, dt_attr = _format_index_date_parts(entry.sort_key)
         if day:
             date_html = (
@@ -366,7 +504,10 @@ def _write_index(entries: list[ArchiveEntry], html_dir: Path) -> Path:
             f"""    <li class="index-item">
       <a class="index-item-link" href="{href}">
         {date_html}
-        <span class="index-item-title">{title_esc}</span>
+        <div class="index-item-main">
+          {tags_html}
+          <span class="index-item-title">{title_esc}</span>
+        </div>
       </a>
     </li>"""
         )
@@ -407,6 +548,7 @@ def build_html_site(
     html_dir: str | Path = "docs",
     *,
     archive_dirs: Optional[list[str | Path]] = None,
+    categories_file: Optional[str | Path] = None,
 ) -> dict[str, int | str]:
     """
     output/ を走査して docs/（既定）を生成する。
@@ -415,6 +557,7 @@ def build_html_site(
     output_root = Path(output_root)
     html_dir = Path(html_dir)
     contents_dir = html_dir / "contents"
+    cat_cfg = _load_category_config(Path(categories_file) if categories_file else None)
 
     entries = discover_archives(output_root)
     if archive_dirs:
@@ -437,7 +580,7 @@ def build_html_site(
         _write_content_page(entry, contents_dir)
         written += 1
 
-    index_path = _write_index(entries, html_dir)
+    index_path = _write_index(entries, html_dir, category_config=cat_cfg)
     return {
         "entries": len(entries),
         "pages_written": written,
@@ -466,12 +609,18 @@ def main() -> None:
         metavar="DIR",
         help="追加で含める成果物ディレクトリ（複数可）",
     )
+    p.add_argument(
+        "--categories-file",
+        default="",
+        help="カテゴリ定義 YAML（既定: リポジトリ直下 categories.yaml）",
+    )
     args = p.parse_args()
 
     result = build_html_site(
         args.output_root,
         args.html_dir,
         archive_dirs=args.archive_dirs or None,
+        categories_file=args.categories_file or None,
     )
     print(
         f"HTML サイト生成完了: {result['pages_written']} 件 → {result['html_dir']} "
