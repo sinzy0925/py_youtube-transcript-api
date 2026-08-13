@@ -9,6 +9,7 @@
 #
 # 実行例: ./run_pipeline.sh 'https://youtu.be/...'
 #   urls.txt へ追記（--retry 用）。execute_urls.txt へ追記し、キューを上から直列実行（完了後に先頭行削除）。
+#   execute_urls.txt … URL のみ、または URL<TAB>出力dir<TAB>ログ（run_channel 等）
 #   複数回連続実行してもプロンプトはすぐ戻る（ワーカーが 1 本だけ直列処理）。
 #   ./run_pipeline.sh --retry [N] … urls.txt から再実行（キューに入れない）
 # 並列用: ./run_pipeline1.sh URL … ./run_pipeline5.sh URL（batch1.log…batch5.log、c.f. PIPELINE_SLOT）
@@ -64,12 +65,22 @@ _execute_urls_trim_line() {
 
 _append_execute_urls_txt() {
   local _url="$1"
-  printf '%s\n' "${_url}" >>"${EXECUTE_URLS_TXT}"
+  local _out="${2:-}"
+  local _log="${3:-}"
+  if [[ -n "${_out}" ]]; then
+    if [[ -n "${_log}" ]]; then
+      printf '%s\t%s\t%s\n' "${_url}" "${_out}" "${_log}" >>"${EXECUTE_URLS_TXT}"
+    else
+      printf '%s\t%s\n' "${_url}" "${_out}" >>"${EXECUTE_URLS_TXT}"
+    fi
+  else
+    printf '%s\n' "${_url}" >>"${EXECUTE_URLS_TXT}"
+  fi
   echo "キュー追記: ${EXECUTE_URLS_TXT}" >&2
 }
 
-# 先頭の有効行（空行・# 除く）を表示
-_execute_urls_peek_first() {
+# 先頭の有効行（空行・# 除く）をそのまま返す
+_execute_urls_peek_first_line() {
   local _f="$1" _line _t
   [[ -f "${_f}" ]] || return 1
   while IFS= read -r _line || [[ -n "${_line}" ]]; do
@@ -80,6 +91,41 @@ _execute_urls_peek_first() {
     return 0
   done <"${_f}"
   return 1
+}
+
+# 先頭行を URL / 出力dir / ログ に分解（タブ区切り。後方互換で URL のみも可）
+_execute_urls_parse_line() {
+  local _line="$1"
+  EXEC_ENTRY_URL="${_line%%$'\t'*}"
+  EXEC_ENTRY_OUT=""
+  EXEC_ENTRY_LOG=""
+  if [[ "${_line}" == *$'\t'* ]]; then
+    local _rest="${_line#*$'\t'}"
+    EXEC_ENTRY_OUT="${_rest%%$'\t'*}"
+    if [[ "${_rest}" == *$'\t'* ]]; then
+      EXEC_ENTRY_LOG="${_rest#*$'\t'}"
+    fi
+  fi
+}
+
+_execute_urls_read_first_entry() {
+  local _f="$1" _line
+  if ! _line="$(_execute_urls_peek_first_line "${_f}")"; then
+    return 1
+  fi
+  _execute_urls_parse_line "${_line}"
+  return 0
+}
+
+# 先頭の有効行（URL 部分のみ。後方互換）
+_execute_urls_peek_first() {
+  local _f="$1" _line
+  if ! _line="$(_execute_urls_peek_first_line "${_f}")"; then
+    return 1
+  fi
+  _execute_urls_parse_line "${_line}"
+  printf '%s' "${EXEC_ENTRY_URL}"
+  return 0
 }
 
 # 先頭の有効行を 1 行削除（残りを書き戻す）
@@ -107,7 +153,7 @@ _execute_urls_pop_first() {
 }
 
 _execute_urls_has_pending() {
-  _execute_urls_peek_first "${EXECUTE_URLS_TXT}" >/dev/null 2>&1
+  _execute_urls_peek_first_line "${EXECUTE_URLS_TXT}" >/dev/null 2>&1
 }
 
 _is_execute_queue_worker_active() {
@@ -231,7 +277,7 @@ elif [[ "${QUEUE_DRAIN}" -eq 0 ]] && [[ "${FINISH_URLS_BATCH_HTML}" -eq 0 ]]; th
     usage
   fi
   _append_urls_txt "${VIDEO_REF}"
-  _append_execute_urls_txt "${VIDEO_REF}"
+  _append_execute_urls_txt "${VIDEO_REF}" "${PIPELINE_OUTPUT_DIR:-}" "${PIPELINE_LOG:-}"
 fi
 
 # 動作する Python を選ぶ（Windows の「python3」が Store スタブで venv 失敗する件は py -3 で回避）
@@ -428,6 +474,21 @@ if [[ "${PIPELINE_SKIP_BUILD_HTML:-}" != "1" ]] && [[ -n "${BUILD_HTML_SITE:-}" 
   echo "HTML サイト: BUILD_HTML_SITE が有効のため --build-html を付与します"
 fi
 
+# a05 引数を組み立て（キュー処理では行ごとに output / log が異なる）
+_build_a05_args_for_item() {
+  local _out="${1:-}"
+  PIPELINE_ITEM_ARGS=(a05_pipeline_youtube_to_email.py)
+  if [[ -n "${_out}" ]]; then
+    PIPELINE_ITEM_ARGS+=(-o "${_out}")
+  fi
+  if [[ -z "${MAIL_TO:-}" ]] && [[ -z "${TO_EMAIL:-}" ]]; then
+    PIPELINE_ITEM_ARGS+=(--skip-email)
+  fi
+  if [[ "${PIPELINE_SKIP_BUILD_HTML:-}" != "1" ]] && [[ -n "${BUILD_HTML_SITE:-}" ]] && [[ "${BUILD_HTML_SITE}" != "0" ]]; then
+    PIPELINE_ITEM_ARGS+=(--build-html)
+  fi
+}
+
 if [[ "${FINISH_URLS_BATCH_HTML}" -eq 1 ]]; then
   if [[ -z "${BUILD_HTML_SITE:-}" ]] || [[ "${BUILD_HTML_SITE}" == "0" ]]; then
     echo "BUILD_HTML_SITE 未設定のため docs 生成をスキップします。" >&2
@@ -447,15 +508,26 @@ if [[ ! -d "${_log_dir}" ]]; then
   mkdir -p "${_log_dir}"
 fi
 
-# 1 件を起動して終了まで待つ（キュー直列用）
-_run_pipeline_wait() {
+# 1 件を起動して終了まで待つ（キュー直列用。出力 dir / ログは行ごとに指定可）
+_run_pipeline_execute_item() {
   local _url="$1"
-  echo "=== パイプライン実行（直列・完了待ち）: ${_url} ===" >&2
-  if ! "${VENV_PY}" -u "${ARGS[@]}" "${_url}" >"${PIPELINE_LOG}" 2>&1; then
-    echo "警告: パイプライン終了コード非0: ${_url} （ログ: ${PIPELINE_LOG}）" >&2
+  local _out="${2:-}"
+  local _log_path="${3:-${PIPELINE_LOG}}"
+  _build_a05_args_for_item "${_out}"
+  if [[ -n "${_out}" ]]; then
+    echo "=== パイプライン実行（直列・完了待ち）: ${_url} → ${_out} （ログ: ${_log_path}） ===" >&2
+  else
+    echo "=== パイプライン実行（直列・完了待ち）: ${_url} ===" >&2
+  fi
+  if ! "${VENV_PY}" -u "${PIPELINE_ITEM_ARGS[@]}" "${_url}" >"${_log_path}" 2>&1; then
+    echo "警告: パイプライン終了コード非0: ${_url} （ログ: ${_log_path}）" >&2
     return 1
   fi
   return 0
+}
+
+_run_pipeline_wait() {
+  _run_pipeline_execute_item "$1" "${PIPELINE_OUTPUT_DIR:-}" "${PIPELINE_LOG}"
 }
 
 # --retry など即時 1 件（従来どおりバックグラウンド）
@@ -513,11 +585,15 @@ _drain_execute_urls_queue() {
   fi
 
   echo "=== execute_urls キュー処理開始 ===" >&2
-  local _url _n=0
-  while _url="$(_execute_urls_peek_first "${EXECUTE_URLS_TXT}")"; do
+  local _n=0
+  while _execute_urls_read_first_entry "${EXECUTE_URLS_TXT}"; do
     _n=$((_n + 1))
-    echo "--- キュー [${_n}] ${_url} ---" >&2
-    _run_pipeline_wait "${_url}" || true
+    if [[ -n "${EXEC_ENTRY_OUT}" ]]; then
+      echo "--- キュー [${_n}] ${EXEC_ENTRY_URL} → ${EXEC_ENTRY_OUT} ---" >&2
+    else
+      echo "--- キュー [${_n}] ${EXEC_ENTRY_URL} ---" >&2
+    fi
+    _run_pipeline_execute_item "${EXEC_ENTRY_URL}" "${EXEC_ENTRY_OUT}" "${EXEC_ENTRY_LOG:-${PIPELINE_LOG}}" || true
     _execute_urls_pop_first "${EXECUTE_URLS_TXT}"
     echo "キューから先頭行を削除しました: ${EXECUTE_URLS_TXT}" >&2
   done

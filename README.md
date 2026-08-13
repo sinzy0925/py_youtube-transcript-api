@@ -299,7 +299,8 @@ chmod +x run_channel.sh
 **その他**
 
 - 親ディレクトリへシンボリックリンクを張る **`junbi.sh`** に **`run_channel.sh` も含まれます**（`run_pipeline.sh` と同様）。
-- **`run_pipeline.sh` 本体は変更しません。** チャンネル連続時は `PIPELINE_LOG` で `batch_channel_<チャンネルスラッグ>_<チャンネル内インデックス>.log` に分け、`PIPELINE_OUTPUT_DIR` で成果物を `output/<スラッグ>_<インデックス>/` に出すように起動します（スラッグは URL から推定。`CHANNEL_OUTPUT_SLUG` で上書き可）。
+- **`run_pipeline.sh` 本体は変更しません。** チャンネル連続時は `PIPELINE_LOG` で `batch_channel_<チャンネルスラッグ>_<チャンネル内インデックス>.log` に分け、`PIPELINE_OUTPUT_DIR` で成果物を `output/<スラッグ>_<インデックス>/` に出すように起動します（スラッグは URL から推定。`CHANNEL_OUTPUT_SLUG` で上書き可）。キューには **URL・出力 dir・ログ** をセットで登録するため、動画ごとに別フォルダへ保存されます。
+- **`BUILD_HTML_SITE=1`** のとき、チャンネル一括の **全件キュー完了後** に `docs/` を **1 回** 再生成します（各動画処理中は `PIPELINE_SKIP_BUILD_HTML`）。
 
 ## 使用ライブラリ
 

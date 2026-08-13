@@ -32,15 +32,17 @@ from m03_api_key_manager import api_key_manager
 # 要約: 既定のモデル試行順（m03_gemini_model_fallback 未導入時、または要約専用）
 _DEFAULT_SUMMARY_MODELS: tuple[str, ...] = (
     "gemini-3.1-flash-lite",
-    "gemini-3-flash-preview",
-    "gemini-2.5-flash",
-    "gemini-2.5-flash-lite",
+    "gemini-3.5-flash-lite",
+    "gemini-3.1-flash",
+    "gemini-3.5-flash",
 )
 
 # 真実度（検索／JSON 等）: 3.1 / 3 プレビューで環境により失敗しやすいため 2.5 系のみ試行
 _DEFAULT_TRUTH_MODELS: tuple[str, ...] = (
     "gemini-2.5-flash",
-    "gemini-2.5-flash-lite",
+    "gemini-3-flash",
+    "gemini-3.1-flash",
+    "gemini-3.5-flash",
 )
 
 try:
@@ -325,7 +327,7 @@ def _run_truth_with_strategies(
     """
     key = api_key
     for label, use_gs, use_api_json, relaxed in _truth_strategy_order(want_grounding):
-        print(f"{label} で試行 : ({PYTHON_NAME})")
+        print(f"{label} で試行（モデル列: {', '.join(models)}） : ({PYTHON_NAME})")
         if relaxed:
             t_prompt = build_truth_assessment_prompt_relaxed(video_title, video_url)
         else:
@@ -352,18 +354,21 @@ def _run_truth_with_strategies(
             if not raw:
                 break
             if _parse_truth_json(raw)[0] is not None:
+                print(
+                    f"{label}: Gemini API 成功 model={model} : ({PYTHON_NAME})"
+                )
                 return raw, key, label, model
             last_attempt = parse_attempt >= max_parse_tries - 1
             if not last_attempt:
                 print(
-                    f"警告: {label} は応答したが JSON 解釈に失敗。"
+                    f"警告: {label} は応答したが JSON 解釈に失敗 (model={model})。"
                     f"同一戦略で再試行 ({parse_attempt + 2}/{max_parse_tries}) : ({PYTHON_NAME})"
                 )
                 if parse_retry_delay > 0:
                     time.sleep(parse_retry_delay)
             elif not relaxed:
                 print(
-                    f"警告: {label} は応答したが JSON 解釈に失敗。次手順へ。 : ({PYTHON_NAME})"
+                    f"警告: {label} は応答したが JSON 解釈に失敗 (model={model})。次手順へ。 : ({PYTHON_NAME})"
                 )
     return None, key, None, None
 
@@ -395,6 +400,10 @@ def _gemini_generate_loop(
         per_try = 0
         while per_try < max_attempts:
             try:
+                print(
+                    f"{purpose}: Gemini API 呼び出し model={model} "
+                    f"({per_try + 1}/{max_attempts}) : ({PYTHON_NAME})"
+                )
                 client = genai.Client(api_key=api_key)
                 gcfg: dict = {
                     "temperature": temperature,
@@ -413,10 +422,9 @@ def _gemini_generate_loop(
                 )
                 text = (getattr(response, "text", None) or "").strip()
                 if text:
-                    if idx > 0:
-                        print(
-                            f"{purpose}: フォールバック model={model} で成功 : ({PYTHON_NAME})"
-                        )
+                    print(
+                        f"{purpose}: Gemini API 成功 model={model} : ({PYTHON_NAME})"
+                    )
                     return text, api_key, model
                 print(
                     f"警告: {purpose} 応答が空（model={model}） : ({PYTHON_NAME})"
@@ -540,7 +548,7 @@ def generate_summary_to_file(
 
     prompt = build_prompt(prompt_mode, prompt_text, video_title, video_url)
     s_parts = [prompt, "\n\n--- 文字起こし本文 ---\n", transcript_text]
-    print(f"要約 : ({PYTHON_NAME})")
+    print(f"要約（モデル列: {', '.join(summary_models)}） : ({PYTHON_NAME})")
     body, api_key, summary_model = _gemini_generate_loop(
         api_key,
         summary_models,

@@ -395,13 +395,21 @@ while IFS= read -r line || [[ -n "${line}" ]]; do
   _rc_seq=$((_rc_from_start + vidx))
   _rc_out="output/${_rc_ch_slug}_${_rc_seq}"
   echo "=== [${_rc_seq}] ${RUN_PIPELINE[*]} ${url} → ${_rc_out}/ （ログ: batch_channel_${_rc_ch_slug}_${_rc_seq}.log） ==="
-  PIPELINE_LOG="${ROOT}/batch_channel_${_rc_ch_slug}_${_rc_seq}.log" PIPELINE_OUTPUT_DIR="${_rc_out}" "${RUN_PIPELINE[@]}" "${url}"
+  PIPELINE_SKIP_BUILD_HTML=1 \
+    PIPELINE_LOG="${ROOT}/batch_channel_${_rc_ch_slug}_${_rc_seq}.log" \
+    PIPELINE_OUTPUT_DIR="${_rc_out}" \
+    "${RUN_PIPELINE[@]}" "${url}"
   vidx=$((vidx + 1))
 done < "${VIDEOS_FILE}"
 
 if [[ "${vidx}" -eq 0 ]]; then
   echo "エラー: ${VIDEOS_FILE} に有効な videoid がありません。" >&2
   exit 1
+fi
+
+if [[ -n "${BUILD_HTML_SITE:-}" ]] && [[ "${BUILD_HTML_SITE}" != "0" ]]; then
+  echo "=== チャンネル一括: キュー完了待ち → docs/ を1回生成 ==="
+  bash "${ROOT}/run_pipeline.sh" --finish-urls-batch-html
 fi
 
 echo "=== パイプライン連続起動 完了: ${vidx} 件の run_pipeline を起動しました ==="
