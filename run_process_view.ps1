@@ -7,9 +7,7 @@
 #
 # 止め方（PowerShell）:
 #   1. 下の一覧で止めたい ProcessId（PID）を確認する
-#   2. 子プロセス -> 親プロセスの順に停止する（例: python -> bash）
-#      Stop-Process -Id <PID> -Force
-#   3. 複数まとめて止める例:
+#   2. 最後に出る Stop-Process をコピーして実行する
 #      Stop-Process -Id 12345,67890 -Force
 #
 # このリポジトリでよく動いているもの:
@@ -46,3 +44,10 @@ if ($processes.Count -eq 0) {
 $processes |
     Select-Object ProcessId, ParentProcessId, CommandLine |
     Format-List
+
+$ids = @($processes | ForEach-Object { $_.ProcessId })
+$idList = $ids -join ','
+
+Write-Host ''
+Write-Host '=== 停止コマンド（コピーして実行） ===' -ForegroundColor Cyan
+Write-Host "Stop-Process -Id $idList -Force" -ForegroundColor Green

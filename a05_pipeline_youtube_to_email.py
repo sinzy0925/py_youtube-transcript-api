@@ -3,7 +3,7 @@
 """
 a05 — 一括パイプライン（これだけ実行すれば一連の処理が完了）
     内部の処理順: (1) a01 字幕取得 → (2) a02 は import のみ →
-    (3) a03 要約前に真実度（目安）API1回＋要約 → (4) a04 メール
+    (3) a03 要約（financial + reference_sources）→ 要約ベース真実度（任意） → (4) a04 メール
 
     使い方（プロジェクトルートで）:
         pip install -r requirements.txt
@@ -133,6 +133,26 @@ def _write_video_info(archive_dir: str, title: str, video_id: str) -> str:
     return path
 
 
+def _format_elapsed(seconds: float) -> str:
+    total = max(0, int(round(seconds)))
+    h, rem = divmod(total, 3600)
+    m, s = divmod(rem, 60)
+    if h:
+        return f"{h}時間{m}分{s}秒"
+    if m:
+        return f"{m}分{s}秒"
+    return f"{s}秒"
+
+
+def _print_pipeline_timing(started_at: datetime) -> None:
+    ended_at = datetime.now()
+    elapsed = (ended_at - started_at).total_seconds()
+    fmt = "%Y-%m-%d %H:%M:%S"
+    print(f"開始: {started_at.strftime(fmt)}")
+    print(f"終了: {ended_at.strftime(fmt)}")
+    print(f"実行時間: {_format_elapsed(elapsed)}")
+
+
 def _print_pipeline_run_footer(
     summary_res: SummaryToFileResult,
     *,
@@ -146,11 +166,11 @@ def _print_pipeline_run_footer(
     if not summary_res.truth_requested:
         print(f"[真実度]スキップ モデル：—")
     elif summary_res.truth_strategy_label:
-        st = "成功" if summary_res.truth_ok else "失敗"
+        st = "成功" if summary_res.truth_ok else "確認失敗"
         tm = summary_res.truth_model or "—"
         print(f"[{summary_res.truth_strategy_label}]{st}　モデル：{tm}")
     else:
-        st = "成功" if summary_res.truth_ok else "失敗"
+        st = "成功" if summary_res.truth_ok else "確認失敗"
         tm = summary_res.truth_model or "—"
         print(f"[真実度]{st}　モデル：{tm}")
     if skip_email:
@@ -189,67 +209,71 @@ def run_pipeline(
     skip_truth_assessment: bool,
     build_html: bool = False,
 ) -> int:
+    started_at = datetime.now()
     print(f"=== パイプライン開始 : ({PYTHON}) ===")
     os.makedirs(archive_dir, exist_ok=True)
 
-    # --- (1) 字幕: a01 ---
-    print(f"[1/3] 字幕取得 → {archive_dir}")
     try:
-        video_id, _fetched = save_transcript_artifacts(archive_dir, video_ref, languages=languages)
-    except Exception as e:
-        print(f"字幕取得に失敗: {e} : ({PYTHON})", file=sys.stderr)
-        _maybe_reboot_google_cloud_shell_after_youtube_ip_block(e)
-        return 1
-    watch_url = video_watch_url(video_id)
-    try:
-        title = _fetch_title_via_oembed(watch_url)
-    except Exception as e:
-        print(f"警告: タイトル取得(oEmbed)に失敗、仮タイトルにします: {e} : ({PYTHON})")
-        title = "（タイトル不明）"
-    _write_video_info(archive_dir, title, video_id)
-    tpath = os.path.join(archive_dir, "transcript.txt")
-    with open(tpath, "r", encoding="utf-8") as f:
-        transcript_text = f.read()
-    print(f"      video_id={video_id} title={title!r}")
+        # --- (1) 字幕: a01 ---
+        print(f"[1/3] 字幕取得 → {archive_dir}")
+        try:
+            video_id, _fetched = save_transcript_artifacts(archive_dir, video_ref, languages=languages)
+        except Exception as e:
+            print(f"字幕取得に失敗: {e} : ({PYTHON})", file=sys.stderr)
+            _maybe_reboot_google_cloud_shell_after_youtube_ip_block(e)
+            return 1
+        watch_url = video_watch_url(video_id)
+        try:
+            title = _fetch_title_via_oembed(watch_url)
+        except Exception as e:
+            print(f"警告: タイトル取得(oEmbed)に失敗、仮タイトルにします: {e} : ({PYTHON})")
+            title = "（タイトル不明）"
+        _write_video_info(archive_dir, title, video_id)
+        tpath = os.path.join(archive_dir, "transcript.txt")
+        with open(tpath, "r", encoding="utf-8") as f:
+            transcript_text = f.read()
+        print(f"      video_id={video_id} title={title!r}")
 
-    # --- (2) 要約: a02+a03 ---
-    summary_path = os.path.join(archive_dir, "summary.txt")
-    print(f"[2/3] 要約（Gemini）→ {summary_path}")
-    sum_res = generate_summary_to_file(
-        transcript_text,
-        summary_path,
-        prompt_mode=prompt_mode,
-        prompt_text=prompt_text,
-        video_title=title,
-        video_url=watch_url,
-        include_truth_assessment=not skip_truth_assessment,
-    )
-    if not sum_res.ok:
-        write_summary_unavailable_placeholder(
-            archive_dir, video_title=title, video_url=watch_url
+        # --- (2) 要約: a02+a03 ---
+        summary_path = os.path.join(archive_dir, "summary.txt")
+        print(f"[2/3] 要約（Gemini）→ {summary_path}")
+        sum_res = generate_summary_to_file(
+            transcript_text,
+            summary_path,
+            prompt_mode=prompt_mode,
+            prompt_text=prompt_text,
+            video_title=title,
+            video_url=watch_url,
+            include_truth_assessment=not skip_truth_assessment,
         )
+        if not sum_res.ok:
+            write_summary_unavailable_placeholder(
+                archive_dir, video_title=title, video_url=watch_url
+            )
 
-    # --- (3) メール: a04 ---
-    if skip_email:
-        print(f"[3/3] メール送信をスキップ (--skip-email) : ({PYTHON})")
-    else:
-        print(f"[3/3] メール送信 To={to_email!r}")
-        mail_ok = send_result_email(archive_dir, to_email, watch_url)
+        # --- (3) メール: a04 ---
+        if skip_email:
+            print(f"[3/3] メール送信をスキップ (--skip-email) : ({PYTHON})")
+        else:
+            print(f"[3/3] メール送信 To={to_email!r}")
+            mail_ok = send_result_email(archive_dir, to_email, watch_url)
 
-    if build_html:
-        _maybe_build_html_site(archive_dir)
+        if build_html:
+            _maybe_build_html_site(archive_dir)
 
-    print(f"=== 完了（成果物は {archive_dir}） : ({PYTHON}) ===" if skip_email else f"=== 完了 : ({PYTHON}) ===")
-    _print_pipeline_run_footer(
-        sum_res,
-        skip_email=skip_email,
-        to_email=to_email,
-        mail_ok=None if skip_email else mail_ok,
-    )
-    print(f"=== [終了] 成果物は {archive_dir} です。")
-    print(f"=== [終了] ===")
-    print(f"=== [終了] ===")
-    return 0
+        print(f"=== 完了（成果物は {archive_dir}） : ({PYTHON}) ===" if skip_email else f"=== 完了 : ({PYTHON}) ===")
+        _print_pipeline_run_footer(
+            sum_res,
+            skip_email=skip_email,
+            to_email=to_email,
+            mail_ok=None if skip_email else mail_ok,
+        )
+        print(f"=== [終了] 成果物は {archive_dir} です。")
+        print(f"=== [終了] ===")
+        print(f"=== [終了] ===")
+        return 0
+    finally:
+        _print_pipeline_timing(started_at)
 
 
 def main() -> None:
@@ -283,8 +307,8 @@ def main() -> None:
     )
     p.add_argument(
         "--prompt-mode",
-        default="detailed",
-        help="a02 のモード: brief|detailed|minutes|custom",
+        default="financial",
+        help="a02 のモード: brief|detailed|financial|minutes|custom",
     )
     p.add_argument(
         "--prompt-text",

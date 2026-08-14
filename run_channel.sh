@@ -353,6 +353,20 @@ if [[ ! -f "${VIDEOS_FILE}" ]]; then
   exit 1
 fi
 
+# シェル未設定なら .env の CHANNEL_PIPELINE_GAP_SEC を使う
+if [[ -z "${CHANNEL_PIPELINE_GAP_SEC:-}" ]] && [[ -f "${ROOT}/.env" ]]; then
+  CHANNEL_PIPELINE_GAP_SEC="$("${VENV_PY}" -c "
+from pathlib import Path
+import sys
+try:
+    from dotenv import dotenv_values
+    d = dotenv_values(Path(sys.argv[1]), encoding='utf-8-sig') or {}
+    print((d.get('CHANNEL_PIPELINE_GAP_SEC') or '').strip())
+except Exception:
+    pass
+" "${ROOT}/.env" 2>/dev/null || true)"
+fi
+
 GAP_SEC="${CHANNEL_PIPELINE_GAP_SEC:-61}"
 # 整数のみ許可（未設定・不正時は 61）
 if ! [[ "${GAP_SEC}" =~ ^[0-9]+$ ]] || [[ "${GAP_SEC}" -lt 1 ]]; then

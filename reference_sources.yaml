@@ -1,0 +1,103 @@
+# 要約プロンプト注入用（静的参照。ライブ API 不要）
+# categories.yaml のカテゴリ名と一致させる
+
+categories:
+  投資:
+    hints:
+      - "NISA・iDeCo の上限・口座区分は年度ごとに変わる。動画の数字は「動画内説明」として記載し、最新は金融庁等で要確認"
+      - "特定口座・源泉徴収・NISA 非課税の組み合わせは個別事情で異なる"
+      - "「確実に儲かる」等の誇張はそのまま断定せず、動画主張として要約する"
+    check_items:
+      - 対象者
+      - 口座・商品名
+      - 金額・上限
+      - リスク
+      - 手数料・税金
+    sources:
+      - name: 金融庁
+        url: https://www.fsa.go.jp/
+      - name: 新NISA制度（金融庁）
+        url: https://www.fsa.go.jp/policy/nisa2/
+      - name: 日本証券業協会
+        url: https://www.jsda.or.jp/
+
+  年金:
+    hints:
+      - "繰上・繰下・受給開始年齢は選択で支給額が変わる"
+      - "公務員・自営・厚生・国民の組み合わせで説明が異なる"
+      - "将来の受給見込みは試算であり保証ではない"
+    check_items:
+      - 年金種類
+      - 受給開始年齢
+      - 繰上繰下
+      - 配偶者・扶養の影響
+    sources:
+      - name: 日本年金機構
+        url: https://www.nenkin.go.jp/
+      - name: ねんきんネット
+        url: https://www.nenkin.go.jp/n_net/
+      - name: 厚生労働省（年金）
+        url: https://www.mhlw.go.jp/stf/seisakunitsuite/nenkin/
+
+  税制:
+    hints:
+      - "住民税非課税・世帯区分・扶養は市区町村・年度で異なる"
+      - "確定申告の要否は所得の種類・金額で変わる"
+      - "動画の税率・控除額は参考値として記載し、国税庁で要確認"
+    check_items:
+      - 課税所得の種類
+      - 控除
+      - 申告期限
+      - 非課税・住民税の要件
+    sources:
+      - name: 国税庁
+        url: https://www.nta.go.jp/
+      - name: e-Tax
+        url: https://www.e-tax.nta.go.jp/
+      - name: 確定申告書等作成コーナー
+        url: https://www.keisan.nta.go.jp/
+
+  介護:
+    hints:
+      - "要介護認定・サービス内容・自己負担割合は個別評価で異なる"
+      - "介護保険の改定・負担限度額は年度・自治体で確認が必要"
+    check_items:
+      - 要介護度
+      - サービス種別
+      - 自己負担割合
+      - 地域差
+    sources:
+      - name: 厚生労働省（介護）
+        url: https://www.mhlw.go.jp/stf/seisakunitsuite/kaigo/
+      - name: 介護サービス情報公表システム
+        url: https://www.kaigodb.com/
+
+  補助金:
+    hints:
+      - "補助金詐欺・架空募集に注意。申請は必ず公式サイトから"
+      - "募集期間・要件・対象者は案件ごとに異なり、動画の一般論と混同しない"
+    check_items:
+      - 募集期間
+      - 対象者・要件
+      - 申請窓口
+      - 詐欺注意
+    sources:
+      - name: 補助金ポータル（jGrants）
+        url: https://www.jgrants-portal.go.jp/
+      - name: 中小企業庁
+        url: https://www.chusho.meti.go.jp/
+
+  不動産:
+    hints:
+      - "固定資産税・譲渡所得税・ローン条件は物件・時期で異なる"
+      - "競売・賃貸の法的手続きは専門家確認を促す"
+    check_items:
+      - 物件種別
+      - 収益・コスト
+      - 税金
+      - リスク
+    sources:
+      - name: 国土交通省
+        url: https://www.mlit.go.jp/
+      - name: 国税庁（不動産・税金）
+        url: https://www.nta.go.jp/taxes/shiraberu/taxanswer/jigyo/

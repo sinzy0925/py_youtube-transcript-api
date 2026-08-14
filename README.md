@@ -97,7 +97,14 @@ GOOGLE_API_KEY_3="あなたのAPIキー3"
 `GOOGLE_API_KEY_1` を**1つでも**設定すると、Gemini は**番号付きキーのローテーションだけ**を使います。その場合、未番号の **`GOOGLE_API_KEY` は Gemini には使われません**（番号側を環境から外せば未番号へフォールバック）。複数本命にするなら上のように `_1,_2,...` に揃えるのが安全です。
 
 - **`GOOGLE_API_KEY`**: [Google AI Studio](https://aistudio.google.com/) 等で発行した **Gemini 用 API キー**。
-- **`TRUTH_ASSESSMENT_GROUNDING`**: `1` で真実度（目安）の検索グラウンディングを利用（`0` でオフ。未設定でも既定は ON 扱い）。
+- **`TRUTH_ASSESSMENT_GROUNDING`**: `1` で要約**後**に要約文ベースの真実度（Google 検索）を試行（`0` でオフ）。
+- **`TRUTH_FALLBACK_ON_SEARCH_FAIL`**: `0`（既定）で検索失敗時に JSON のみ等へ落とさない。失敗時は `【真実度確認】 失敗` と表示し要約は保存。
+- **`TRUTH_DELAY_AFTER_SUMMARY_SEC`**: 要約成功後、真実度開始前の待機秒（既定 `30`）。要約で使ったキーの**次**から真実度を開始。
+- **`TRUTH_ALWAYS_ROTATE_KEY`**: `1`（既定）で真実度のリトライ・モデル切替のたびに API キーをローテーション。ログに `key#N/M GOOGLE_API_KEY_X` 形式で表示。
+- **`TRUTH_VERBOSE_REQUEST_LOG`**: `1`（既定）で真実度 API の入力文字数・推定トークン数・クォータ診断・成功時 `usage_metadata` をログ出力。
+- 真実度で Google 検索ツール使用時、成功応答の **`grounding_metadata`** を解析し `GoogleSearch=ON/OFF`（API 応答ベース）・検索クエリ・引用 source URL をログ出力。`summary.txt` の `[GoogleSearch:ON/OFF]` も同じ判定を使用。
+- **`TRUTH_MAX_PROJECT_RESTRICTED_KEY_SKIPS`**: 404（`no longer available to new users` 等）のとき、同一モデル（例: `gemini-2.5-flash-lite`）のまま別キーを試行する上限（未設定時=全キー）。
+- **`SUMMARY_PROMPT_MODE`**: 既定 `financial`（投資・年金・税制等向け章立て）。`reference_sources.yaml` をカテゴリに応じて注入。
 - **`TO_EMAIL`**: 成果物を送る**宛先**。代わりに **`MAIL_TO`** でも可（どちらかがあれば `run_pipeline.sh` はメール送信ルート）。
 - **`GMAIL_USER`**: 送信に使う **Gmail アドレス**（通常は `@gmail.com` まで含む全文）。
 - **`GMAIL_APP_PASSWORD`**: そのアカウントの **[アプリパスワード](https://support.google.com/accounts/answer/185833)**（**16 文字**。2 段階認証有効時に発行。**通常のログインパスワードではない**）。
@@ -111,7 +118,8 @@ GOOGLE_API_KEY_3="あなたのAPIキー3"
 | 用途 | 変数例 |
 |------|--------|
 | Gemini 要約 | `GOOGLE_API_KEY` または `GOOGLE_API_KEY_1` … `GOOGLE_API_KEY_N`、範囲 `API_KEY_RANGE` 等は `m03_api_key_manager.py` 参照 |
-| 真実度の検索グラウンディング | 既定ON。`TRUTH_ASSESSMENT_GROUNDING=0` でオフ可 |
+| 真実度（要約後・軽量） | `TRUTH_ASSESSMENT_GROUNDING`、`TRUTH_DELAY_AFTER_SUMMARY_SEC=30`、`TRUTH_ALWAYS_ROTATE_KEY=1`、`GEMINI_TRUTH_MAX_MODELS=2` 等（`.env.sample` 参照） |
+| 要約プロンプト | 既定 `financial`。`reference_sources.yaml` + `categories.yaml` |
 | 送信先メール | `MAIL_TO` または `TO_EMAIL` |
 | Gmail 送信 | `GMAIL_USER`（Gmail 全文）、`GMAIL_APP_PASSWORD`（16 文字） |
 | 要約サイト生成 | `BUILD_HTML_SITE=1` … パイプライン完了後に `docs/` を再生成（`run_pipeline_urls.sh` は全件キュー完了後に1回） |
@@ -121,7 +129,7 @@ GOOGLE_API_KEY_3="あなたのAPIキー3"
 | モジュール | 役割 |
 |------------|------|
 | **a01** `a01_get_transcript.py` | 字幕の取得。単体なら `python a01_get_transcript.py` |
-| **a02** `a02_summary_prompt_shared.py` | 要約・真実度用のプロンプト定義（import のみ） |
+| **a02** `a02_summary_prompt_shared.py` / `a02_category_detect.py` | 要約・真実度プロンプト、カテゴリ判定、`reference_sources.yaml` |
 | **a03** `a03_gemini_summary.py` | Gemini で要約し `summary.txt` 用テキストを生成 |
 | **a04** `a04_send_result_email.py` | Gmail（SMTP）で成果物を送信 |
 | **a05** `a05_pipeline_youtube_to_email.py` | 上記を 1 本で実行 |
@@ -135,7 +143,7 @@ python a05_pipeline_youtube_to_email.py --to your@gmail.com "https://www.youtube
 
 - 送信先を省略し `MAIL_TO` も未設定のときにメール不要なら **`--skip-email`**
 - 成果物は既定で `output/<日時>_<動画ID先頭8文字>/`（`transcript.txt`, `summary.txt`, `subtitle_*.vtt`, `video_info.json` など）
-- その他: `-l` 字幕言語優先（例: `ja en`）, `--prompt-mode`（`brief` / `detailed` / `minutes` / `custom`）, `--skip-truth-assessment`
+- その他: `-l` 字幕言語優先（例: `ja en`）, `--prompt-mode`（`brief` / `detailed` / **`financial`** / `minutes` / `custom`）, `--skip-truth-assessment`
 
 ### `run_pipeline.sh`（Bash: Git Bash / WSL / Cloud Shell 等）
 

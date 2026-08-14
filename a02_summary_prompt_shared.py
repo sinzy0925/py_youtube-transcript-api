@@ -3,13 +3,15 @@
 """
 a02 — プロンプト定義（直接実行しない）
     要約の指示文を a03 から import する。パイプライン順: a01 → a02(import) → a03 → a04。
-    Groq / Gemini の要約プロンプトを同一に保つ（detailed 等の本文はここが唯一のソース）。
+    Groq / Gemini の要約プロンプトを同一に保つ（detailed / financial 等の本文はここが唯一のソース）。
 """
 
 from __future__ import annotations
 
-# パイプライン未指定時・mode 空時の既定（両経路で揃える）
-DEFAULT_PROMPT_MODE = "detailed"
+import os
+
+# パイプライン未指定時・mode 空時の既定
+DEFAULT_PROMPT_MODE = "financial"
 
 # 旧 Groq の system と同等の拘束を、両モデルに同じ user 冒頭で渡す
 _ROLE_AND_OUTPUT = (
@@ -21,13 +23,46 @@ _ROLE_AND_OUTPUT = (
     "知られている実事を、根拠なく『架空』『作り話』扱いする表現は避ける。不確かな点は不確かと書く。\n"
 )
 
+_FINANCIAL_BODY = (
+    "以下の文字起こしを、投資・年金・税金・介護・補助金・資産形成など"
+    "金融・福祉・制度解説向けに詳細要約してください。\n\n"
+    "【必須セクション（見出し付き）】\n"
+    "1. 一言サマリー（誰向け・テーマ）\n"
+    "2. 対象者・前提条件（年齢、所得、世帯、雇用形態 等）\n"
+    "3. 制度・商品・施策名と要点\n"
+    "4. 数字一覧（金額・率・上限・期限）※文字起こしにあるもののみ。無い数字は捏造しない\n"
+    "5. メリット / デメリット / リスク\n"
+    "6. 視聴者が取れるアクション（手順・時期）\n"
+    "7. 注意・免責（個別事情で変わる点、動画主張≠公式見解）\n"
+    "8. 公式確認先（下記参照リストから該当のみ列挙。無ければ「該当官公庁サイトで要確認」）\n\n"
+    "【ルール】\n"
+    "・YouTube の断定表現は「動画内では〜との説明」と出所を区別する\n"
+    "・推測は「推測:」と明示\n"
+    "・補助金・非課税・住民税は詐欺・自治体差の注意を1文入れる\n"
+    "・文字起こしにない制度改定年・税率・上限を書かない\n\n"
+    "【禁止】文字起こしにない事実の捏造、過度な一般化、「確実に儲かる」等の誇張をそのまま断定。"
+)
 
-def build_prompt(mode: str, custom_prompt: str, video_title: str, video_url: str) -> str:
+
+def resolve_prompt_mode(mode: str) -> str:
+    """CLI / env 未指定時は SUMMARY_PROMPT_MODE → DEFAULT_PROMPT_MODE。"""
+    m = (mode or os.getenv("SUMMARY_PROMPT_MODE") or DEFAULT_PROMPT_MODE).strip().lower()
+    return m or DEFAULT_PROMPT_MODE
+
+
+def build_prompt(
+    mode: str,
+    custom_prompt: str,
+    video_title: str,
+    video_url: str,
+    *,
+    reference_block: str = "",
+) -> str:
     """
     文字起こし本文の直前までのプロンプト（--- 文字起こし本文 --- は呼び出し側で付与）。
-    mode: brief | detailed | minutes | custom（空は DEFAULT_PROMPT_MODE）
+    mode: brief | detailed | financial | minutes | custom
     """
-    mode = (mode or DEFAULT_PROMPT_MODE).strip().lower() or DEFAULT_PROMPT_MODE
+    mode = resolve_prompt_mode(mode)
     head = (
         _ROLE_AND_OUTPUT
         + f"対象動画タイトル: {video_title}\n"
@@ -41,6 +76,8 @@ def build_prompt(mode: str, custom_prompt: str, video_title: str, video_url: str
             "見出し: 概要 / 決定事項 / ToDo / 未決事項 / 補足\n"
             "箇条書き中心で簡潔に。"
         )
+    elif mode == "financial":
+        body = _FINANCIAL_BODY
     elif mode == "detailed":
         body = (
             "以下の文字起こしを詳細要約してください。\n\n"
@@ -58,7 +95,43 @@ def build_prompt(mode: str, custom_prompt: str, video_title: str, video_url: str
         body = custom_prompt.strip() or "以下の文字起こしを要約してください。"
     else:
         body = "以下の文字起こしを簡易要約してください。要点を箇条書きで短くまとめてください。"
+    ref = (reference_block or "").strip()
+    if ref:
+        body = f"{body}\n\n{ref}"
     return f"{head}\n{body}"
+
+
+def build_truth_assessment_prompt_for_summary(
+    video_title: str,
+    video_url: str,
+    *,
+    reference_block: str = "",
+) -> str:
+    """
+    要約本文に対する真実度（検索+プロンプトJSON 用）。
+    文字起こし全文は渡さない。Google 検索で要約内の主張を公開情報と照合可能。
+    """
+    ref = (reference_block or "").strip()
+    ref_section = f"\n{ref}\n" if ref else ""
+    return (
+        "【役割】以下の「要約文」について、信頼性の目安（0〜100）を JSON で返す。"
+        "評価対象は要約文のみ（文字起こし全文は与えない）。\n"
+        "【観点】\n"
+        "・数字・制度名・条件の記載が要約内で一貫しているか\n"
+        "・断定・誇張の追加がないか（「動画内説明」「推測」の区別が適切か）\n"
+        "・注意・免責・公式確認先の記載があるか（制度・税金・補助金系）\n"
+        "・利用可能なら Google 検索で要約内の主要な固有名・制度・数値の桁を公開情報と照合\n"
+        "【出力形式】Google 検索ツールは利用してよい。"
+        "応答本文は **有効な JSON オブジェクト 1 個だけ**。"
+        "前後に説明・マークダウン・コードフェンスを付けない。\n"
+        + ref_section
+        + f"対象動画タイトル: {video_title}\n"
+        + f"対象動画URL: {video_url}\n"
+        "以下の区切りの後が「要約文」です。\n"
+        "score_percent: 0〜100 の整数\n"
+        "reason: 日本語3〜7文。検索で確認した点があれば簡潔に。\n"
+        '厳密な形式: {"score_percent": <整数>, "reason": "<文字列>"}\n'
+    )
 
 
 def build_truth_assessment_prompt(
@@ -68,11 +141,7 @@ def build_truth_assessment_prompt(
     json_via_api_schema: bool = True,
 ) -> str:
     """
-    要約前の文字起こし全文を渡し、真実性・信頼性の目安（0〜100）を JSON で返させる用。
-    Google 検索ツール使用時は、固有名（国・紛争・年・企業等）の公開報道と照合し、誤認（実在を架空扱い等）を避ける。
-
-    json_via_api_schema=True … API の response_mime_type / JSON スキーマで厳制（検索ツールと併用できないモデルあり）。
-    json_via_api_schema=False … 検索と併用時。**プロンプトのみ**で JSON オブジェクト 1 個だけを出力させ、_parse_truth_json で読む。
+    文字起こし全文用（レガシー／search_google.py 等）。要約パイプラインでは for_summary を使用。
     """
     if json_via_api_schema:
         api_form = (
@@ -87,7 +156,7 @@ def build_truth_assessment_prompt(
             "プログラムが `json.loads` で解析する。reason はプレーンテキスト（* や # は使わない）。\n"
         )
     return (
-        "【役割】与えられた文字起こし（要約前の全文）について、\n"
+        "【役割】与えられた文字起こし（要約前の全文）について、"
         "後段の要約の土台としての『妥当性・信頼性の目安』を採点する。あくまで目安（完璧な事実審判ではない）。\n"
         "【特に重視：実在事柄の誤認の防止】\n"
         "国名・国際紛争名・年号・大企業名・公人名など、**実在の時事・歴史的事柄**が出る箇所では、\n"
@@ -98,37 +167,19 @@ def build_truth_assessment_prompt(
         "   国名の存在・紛争の実在性・大まかな時期感など、一般に定着している知識と食い違っていないかを確認してから採点する。\n"
         "4) 出典の明記が少なく、一次情報（当事者の直接の言明）やデータが無い点は、信頼度の減点要因にしてよいが、\n"
         "   『実在の出来事の説明』を『小説的虚構』と取り違えて大きく点を下げる誤りは避ける。\n"
-        "【採点の観点（例）】\n"
-        "・出典・引用・データ（一次・二次）の有無、主張と推測の区別、断定的言い切り、内部の一貫性、\n"
-        "  あわせ、上記の公開知識との整合（検索等で分かった範囲）を要約的に示す。\n"
-        "【用語の禁止：誤ったレッテル】\n"
-        "国際情勢・海峡・紛争・交渉・企業名などを**解説型・仮定を置いた分析（未来リスク、ケース分け、シナリオ想定含む）**"
-        "として語っている箇所を、\n"
-        "根拠なく「**架空のシナリオ**」「作り話」**のみ**を理由に**極端に点を下げてはいけない**。\n"
-        "そのような動画は、報道で追える**実在の国際関係**に沿った**時事解説**であることが多い。"
-        "「仮定を置いたシミュレーション説明」は**小説的虚構**とは別枠で述べ、採点は**構造的一貫性と主張の根拠の明示**で判断する。\n"
-        "「架空」**という語は**、文字起こしが**年表・国名の組み合わせ等で公知史実と明確に矛盾**する、"
-        "または**純粋なフィクション**と分かる場合に限り使う。多用しない。\n"
         + api_form
         + f"対象動画タイトル: {video_title}\n"
         + f"対象動画URL: {video_url}\n"
         "以下の区切りの後に続くのは「文字起こし全文（要約前）」です。\n"
-        "0〜100 の整数 score_percent（高いほど、**時事解説・分析**として一貫し、"
-        "公知の枠組みと**大きく矛盾しない**説明、または不確かさの表明が公平だと判断した場合）。\n"
-        "score_percent: 0〜100\n"
-        "reason: 日本語3〜7文。上記方針に従い、**なぜこの範囲の点か**、検索で分かった点があれば簡潔に。"
-        "地政学解説を不適切に低評価していないか自己チェックする。"
-        "あくまで目安を1文。\n"
         '厳密な形式: {"score_percent": <整数>, "reason": "<文字列>"}\n'
     )
 
 
 def build_truth_assessment_prompt_relaxed(video_title: str, video_url: str) -> str:
-    """検索・自由形式／自由形式用。JSON を本文に含めつつ前後に短い説明が付いてもよい想定で _extract_json_object を利用。"""
+    """検索・自由形式／自由形式用（レガシー）。"""
     return (
         "【役割】文字起こし（要約前全文）の信頼性目安を 0〜100 で付け、根拠を述べる。\n"
         "可能なら **本文中に 1 か所**、次の形式の JSON のみを含める（コードフェンスは使わない）：\n"
         '{"score_percent": <0〜100の整数>, "reason": "<日本語で3〜7文>"}\n'
-        "どうしても難しければ、先に簡潔な所感を書き、**最終行を上記 JSON 1 行のみ**にする。\n"
         f"対象: {video_title} / {video_url}\n"
     )

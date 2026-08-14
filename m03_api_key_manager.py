@@ -31,6 +31,7 @@ class ApiKeyManager:
         self._initialized = True
 
         self._api_keys: list[str] = []
+        self._key_env_suffixes: list[int] = []
         self._current_index: int = -1
         self._key_selection_lock = threading.Lock()
         
@@ -70,11 +71,14 @@ class ApiKeyManager:
             else:
                 print(f"警告: API_KEY_RANGE の形式が不正です: {range_text}")
 
-        for _, value in sorted(numbered):
+        suffixes: list[int] = []
+        for env_idx, value in sorted(numbered):
             if value not in keys:
                 keys.append(value)
+                suffixes.append(env_idx)
 
         self._api_keys = keys
+        self._key_env_suffixes = suffixes
         if not self._api_keys:
             print("警告: 有効なAPIキーが.envファイルに設定されていません。")
 
@@ -117,7 +121,7 @@ class ApiKeyManager:
             self._current_index = (self._current_index + 1) % len(self._api_keys)
             selected_key = self._api_keys[self._current_index]
             print(
-                f"[{self.__class__.__name__}] APIkey: idx: {self._current_index}, key: {selected_key[-4:]} [{caller_info}]"
+                f"[{self.__class__.__name__}] {self.format_key_log(list_index=self._current_index)} [{caller_info}]"
             )
             return selected_key
 
@@ -136,20 +140,59 @@ class ApiKeyManager:
     def key_count(self) -> int:
         return len(self._api_keys)
 
+    def env_suffix_for_index(self, list_index: int) -> int | None:
+        """GOOGLE_API_KEY_N の N（リスト位置が範囲外なら None）。"""
+        if 0 <= list_index < len(self._key_env_suffixes):
+            return self._key_env_suffixes[list_index]
+        return None
+
+    def format_key_log(
+        self,
+        *,
+        api_key: str | None = None,
+        list_index: int | None = None,
+    ) -> str:
+        """
+        ログ用キー表示。例: key#2/10 GOOGLE_API_KEY_3 (…v9yQ)
+        list_index または api_key のどちらかで特定。未指定時は last_used。
+        """
+        idx = list_index
+        key = api_key
+        if idx is None and key is not None:
+            try:
+                idx = self._api_keys.index(key)
+            except ValueError:
+                idx = None
+        if idx is None:
+            idx = self._current_index
+        total = len(self._api_keys)
+        if idx is None or idx < 0 or not self._api_keys:
+            snippet = (key or "")[-4:] if key else "N/A"
+            return f"key:?/{total} ({snippet})"
+        if key is None:
+            key = self._api_keys[idx]
+        env_n = self.env_suffix_for_index(idx)
+        env_part = f"GOOGLE_API_KEY_{env_n}" if env_n is not None else f"list_idx:{idx}"
+        return f"key#{idx + 1}/{total} {env_part} (…{key[-4:]})"
+
     @property
     def last_used_key_info(self) -> dict:
         if self._current_index == -1 or not self._api_keys:
             return {
                 "key_snippet": "N/A",
                 "index": -1,
-                "total": len(self._api_keys)
+                "env_suffix": None,
+                "total": len(self._api_keys),
+                "label": self.format_key_log(),
             }
-        
+
         key = self._api_keys[self._current_index]
         return {
             "key_snippet": key[-4:],
             "index": self._current_index,
-            "total": len(self._api_keys)
+            "env_suffix": self.env_suffix_for_index(self._current_index),
+            "total": len(self._api_keys),
+            "label": self.format_key_log(list_index=self._current_index),
         }
 
 api_key_manager = ApiKeyManager()
