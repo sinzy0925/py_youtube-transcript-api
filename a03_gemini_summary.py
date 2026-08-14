@@ -35,6 +35,8 @@ _DEFAULT_SUMMARY_MODELS: tuple[str, ...] = (
     "gemini-3.5-flash-lite",
     "gemini-3.1-flash",
     "gemini-3.5-flash",
+    "gemini-3.6-flash",
+    "gemini-3.7-flash",
 )
 
 # 真実度（検索／JSON 等）: 3.1 / 3 プレビューで環境により失敗しやすいため 2.5 系のみ試行
@@ -43,6 +45,8 @@ _DEFAULT_TRUTH_MODELS: tuple[str, ...] = (
     "gemini-3-flash",
     "gemini-3.1-flash",
     "gemini-3.5-flash",
+    "gemini-3.6-flash",
+    "gemini-3.7-flash",
 )
 
 try:
