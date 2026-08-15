@@ -10,7 +10,10 @@
 # --foreground | --no-nohup … フォアグラウンド実行（nohup しない）
 #
 # run_pipeline 間隔: CHANNEL_PIPELINE_GAP_SEC（秒、既定 61）。
-# 成果物フォルダ: output/<チャンネルスラッグ>_<チャンネル内インデックス>/（--fromto START:END の START から連番。b01 の videoids.txt の行順＝動画タブ先頭からの添字に一致）。
+#   1 件のキュー処理が終わってから次を登録するまでの待機（起動同士の間隔ではない）。
+# 成果物フォルダ: output/<チャンネルスラッグ>_<公開日YYYYMMDD>_<videoid>/
+#   既に同 videoid の成果物（summary.txt 等）があればスキップ。
+#   videoids.txt は b01 が videoid[TAB]YYYYMMDD で書く（公開日不明時は videoid のみ可）。
 # 起動直後（外側プロセスのみ）: リポジトリ直下の *.log を削除してから処理する。
 #
 # Windows (Git Bash) / WSL / Linux 共通: .venv の python を直接使用（activate 不要）
@@ -26,7 +29,8 @@ usage() {
   echo "  明示: $0 '…' --fromto 0:2 --gopipeline --nohup （既定と同じで省略可）" >&2
   echo "  videoids のみ: $0 '…' --fromto 0:2 --no-gopipeline" >&2
   echo "  フォアグラウンド: $0 '…' --fromto 0:2 --foreground" >&2
-  echo "  間隔: CHANNEL_PIPELINE_GAP_SEC（秒、既定 61）" >&2
+  echo "  間隔: CHANNEL_PIPELINE_GAP_SEC（秒、既定 61）※前件完了後→次件登録前の待機" >&2
+  echo "  出力: output/<CHANNEL_OUTPUT_SLUG>_<公開日YYYYMMDD>_<videoid>/（取得済みはスキップ）" >&2
   echo "  出力名: CHANNEL_OUTPUT_SLUG（省略時は URL から @handle 等を推定）" >&2
   echo "  nohup ログ: CHANNEL_LOG（既定: リポジトリ直下 channel.log）" >&2
   exit 1
@@ -59,30 +63,6 @@ _rc_channel_slug_from_url() {
     slug="${slug:0:80}"
   fi
   printf '%s' "${slug}"
-}
-
-# PASS_ARGS 内の --fromto START:END から START を取得（videoids.txt の行順と b01 のインデックスに一致）
-_rc_fromto_start_from_pass_args() {
-  local i=0 n=${#PASS_ARGS[@]} spec
-  while [[ "${i}" -lt "${n}" ]]; do
-    if [[ "${PASS_ARGS[$i]}" == "--fromto" ]]; then
-      i=$((i + 1))
-      if [[ "${i}" -ge "${n}" ]]; then
-        printf '%s' "0"
-        return 0
-      fi
-      spec="${PASS_ARGS[$i]}"
-      if [[ "${spec}" =~ ^([0-9]+): ]]; then
-        printf '%s' "${BASH_REMATCH[1]}"
-        return 0
-      fi
-      printf '%s' "0"
-      return 0
-    fi
-    i=$((i + 1))
-  done
-  printf '%s' "0"
-  return 0
 }
 
 # PASS_ARGS を「チャンネルURL・--fromto・メタフラグ」に正規化（順不同可）。
@@ -368,62 +348,169 @@ except Exception:
 fi
 
 GAP_SEC="${CHANNEL_PIPELINE_GAP_SEC:-61}"
-# 整数のみ許可（未設定・不正時は 61）
-if ! [[ "${GAP_SEC}" =~ ^[0-9]+$ ]] || [[ "${GAP_SEC}" -lt 1 ]]; then
+# 0 以上の整数のみ許可（未設定・不正時は 61）
+if ! [[ "${GAP_SEC}" =~ ^[0-9]+$ ]]; then
   GAP_SEC=61
 fi
 
-echo "=== パイプライン連続起動: run_pipeline.sh を videoid ごとに（間隔 ${GAP_SEC}s） ==="
+echo "=== パイプライン連続起動: run_pipeline.sh を videoid ごとに（前件完了後 ${GAP_SEC}s 待機） ==="
 
 if [[ -n "${CHANNEL_OUTPUT_SLUG:-}" ]]; then
   _rc_ch_slug="${CHANNEL_OUTPUT_SLUG}"
 else
   _rc_ch_slug="$(_rc_channel_slug_from_url "${PASS_ARGS[0]}")"
 fi
-_rc_from_start="$(_rc_fromto_start_from_pass_args)"
-echo "出力フォルダ接頭辞: output/${_rc_ch_slug}_<番号>/ （--fromto の START=${_rc_from_start} から連番）"
+echo "出力フォルダ: output/${_rc_ch_slug}_<公開日YYYYMMDD>_<videoid>/ （取得済み videoid はスキップ）"
+
+# execute_urls キューが空かつワーカー未稼働になるまで待つ（1 件完了の合図）
+_rc_wait_execute_queue_idle() {
+  local _tick=0
+  local _f="${ROOT}/execute_urls.txt"
+  local _lock_d="${ROOT}/execute_urls.lock.d"
+  echo "=== 前件のキュー処理完了を待機 ==="
+  while true; do
+    local _pending=0
+    if [[ -f "${_f}" ]]; then
+      while IFS= read -r _line || [[ -n "${_line}" ]]; do
+        _line="${_line//$'\r'/}"
+        _line="${_line#"${_line%%[![:space:]]*}"}"
+        _line="${_line%"${_line##*[![:space:]]}"}"
+        [[ -z "${_line}" ]] && continue
+        [[ "${_line}" == \#* ]] && continue
+        _pending=1
+        break
+      done < "${_f}"
+    fi
+    if [[ "${_pending}" -eq 0 ]] && [[ ! -d "${_lock_d}" ]]; then
+      break
+    fi
+    _tick=$((_tick + 1))
+    if [[ $((_tick % 4)) -eq 0 ]]; then
+      echo "  待機中…（キュー処理の完了を待っています）"
+    fi
+    sleep 5
+  done
+  echo "=== 前件のキュー処理完了 ==="
+}
+
+# 既に同 videoid の成果物があればスキップ（旧 ga-ko_N 形式も含む）
+_rc_already_have_videoid() {
+  local _vid="$1"
+  "${VENV_PY}" -c "
+from pathlib import Path
+import json
+import sys
+vid = sys.argv[1]
+root = Path(sys.argv[2])
+if not root.is_dir():
+    raise SystemExit(1)
+for child in root.iterdir():
+    if not child.is_dir():
+        continue
+    name = child.name
+    has_summary = (child / 'summary.txt').is_file()
+    has_info = (child / 'video_info.json').is_file()
+    if name == vid or name.endswith('_' + vid):
+        if has_summary or has_info:
+            print(str(child))
+            raise SystemExit(0)
+    if has_info:
+        try:
+            data = json.loads((child / 'video_info.json').read_text(encoding='utf-8'))
+        except Exception:
+            continue
+        if str(data.get('video_id') or '').strip() == vid and has_summary:
+            print(str(child))
+            raise SystemExit(0)
+raise SystemExit(1)
+" "${_vid}" "${ROOT}/output" 2>/dev/null
+}
+
+# 公開日が無い行向け: yt-dlp で YYYYMMDD を取る（失敗時は空）
+_rc_fetch_upload_date() {
+  local _vid="$1"
+  "${VENV_PY}" -c "
+from b01_channel_to_videoid import fetch_upload_date
+import sys
+print(fetch_upload_date(sys.argv[1]), end='')
+" "${_vid}" 2>/dev/null || true
+}
 
 RUN_PIPELINE=(bash "${ROOT}/run_pipeline.sh")
-last_start_sec=0
-vidx=0
+seen=0
+ran=0
+skipped=0
 
 while IFS= read -r line || [[ -n "${line}" ]]; do
-  vid="${line//$'\r'/}"
+  line="${line//$'\r'/}"
+  line="${line#"${line%%[![:space:]]*}"}"
+  line="${line%"${line##*[![:space:]]}"}"
+  [[ -z "${line}" ]] && continue
+  [[ "${line}" == \#* ]] && continue
+
+  vid=""
+  pub_date=""
+  if [[ "${line}" == *$'\t'* ]]; then
+    vid="${line%%$'\t'*}"
+    pub_date="${line#*$'\t'}"
+  elif [[ "${line}" == *' '* ]]; then
+    # 互換: 空白区切り videoid YYYYMMDD
+    vid="${line%% *}"
+    pub_date="${line#* }"
+  else
+    vid="${line}"
+  fi
   vid="${vid#"${vid%%[![:space:]]*}"}"
   vid="${vid%"${vid##*[![:space:]]}"}"
+  pub_date="${pub_date#"${pub_date%%[![:space:]]*}"}"
+  pub_date="${pub_date%"${pub_date##*[![:space:]]}"}"
   [[ -z "${vid}" ]] && continue
-  [[ "${vid}" == \#* ]] && continue
+  seen=$((seen + 1))
 
-  now_sec="$(date +%s)"
-  if [[ "${last_start_sec}" -gt 0 ]]; then
-    elapsed=$((now_sec - last_start_sec))
-    if [[ "${elapsed}" -lt "${GAP_SEC}" ]]; then
-      sleep_sec=$((GAP_SEC - elapsed))
-      echo "間隔: ${sleep_sec}秒待機（直前の run_pipeline 起動から ${GAP_SEC}秒以上）"
-      sleep "${sleep_sec}"
-    fi
+  if ! [[ "${pub_date}" =~ ^[0-9]{8}$ ]]; then
+    pub_date="$(_rc_fetch_upload_date "${vid}")"
+  fi
+  if ! [[ "${pub_date}" =~ ^[0-9]{8}$ ]]; then
+    pub_date="$(date +%Y%m%d)"
+    echo "警告: ${vid} の公開日が取れないため実行日 ${pub_date} を使います" >&2
   fi
 
-  last_start_sec="$(date +%s)"
+  _rc_out="output/${_rc_ch_slug}_${pub_date}_${vid}"
+  _rc_log="batch_channel_${_rc_ch_slug}_${pub_date}_${vid}.log"
+
+  if _existing="$(_rc_already_have_videoid "${vid}")"; then
+    echo "=== スキップ（取得済み）: ${vid} （既存: ${_existing}） → 予定 ${_rc_out}/ ==="
+    skipped=$((skipped + 1))
+    continue
+  fi
+
+  # 実際に処理する件のあいだだけ待機（スキップは間隔に含めない）
+  if [[ "${ran}" -gt 0 ]] && [[ "${GAP_SEC}" -gt 0 ]]; then
+    echo "間隔: ${GAP_SEC}秒待機（前件完了後 → 次件登録前）"
+    sleep "${GAP_SEC}"
+  fi
+
   url="https://youtu.be/${vid}"
-  _rc_seq=$((_rc_from_start + vidx))
-  _rc_out="output/${_rc_ch_slug}_${_rc_seq}"
-  echo "=== [${_rc_seq}] ${RUN_PIPELINE[*]} ${url} → ${_rc_out}/ （ログ: batch_channel_${_rc_ch_slug}_${_rc_seq}.log） ==="
+  echo "=== ${RUN_PIPELINE[*]} ${url} → ${_rc_out}/ （ログ: ${_rc_log}） ==="
   PIPELINE_SKIP_BUILD_HTML=1 \
-    PIPELINE_LOG="${ROOT}/batch_channel_${_rc_ch_slug}_${_rc_seq}.log" \
+    PIPELINE_LOG="${ROOT}/${_rc_log}" \
     PIPELINE_OUTPUT_DIR="${_rc_out}" \
     "${RUN_PIPELINE[@]}" "${url}"
-  vidx=$((vidx + 1))
+  # キュー登録は即戻るため、当該件の処理完了まで待つ
+  _rc_wait_execute_queue_idle
+  ran=$((ran + 1))
 done < "${VIDEOS_FILE}"
 
-if [[ "${vidx}" -eq 0 ]]; then
+if [[ "${seen}" -eq 0 ]]; then
   echo "エラー: ${VIDEOS_FILE} に有効な videoid がありません。" >&2
   exit 1
 fi
 
-if [[ -n "${BUILD_HTML_SITE:-}" ]] && [[ "${BUILD_HTML_SITE}" != "0" ]]; then
+if [[ "${ran}" -gt 0 ]] && [[ -n "${BUILD_HTML_SITE:-}" ]] && [[ "${BUILD_HTML_SITE}" != "0" ]]; then
   echo "=== チャンネル一括: キュー完了待ち → docs/ を1回生成 ==="
   bash "${ROOT}/run_pipeline.sh" --finish-urls-batch-html
+elif [[ "${ran}" -eq 0 ]] && [[ "${skipped}" -gt 0 ]]; then
+  echo "=== 全件スキップのため docs/ 再生成は行いません（必要なら python build_html_site.py） ==="
 fi
 
-echo "=== パイプライン連続起動 完了: ${vidx} 件の run_pipeline を起動しました ==="
+echo "=== パイプライン連続起動 完了: 処理 ${ran} 件 / スキップ ${skipped} 件 / 対象 ${seen} 件 ==="

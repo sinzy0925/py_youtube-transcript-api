@@ -10,7 +10,7 @@ YouTube の動画を指定すると、**字幕を取得し、Gemini で要約し
 
 1. **1 本だけ** … Cloud Shell などで `.env` を用意したうえで、`./run_pipeline.sh 'https://youtu.be/…'` を実行すると、**要約などがメールで届く**（`MAIL_TO` / `TO_EMAIL` と Gmail 送信設定がある場合。無ければ `--skip-email` 相当でファイルのみ）。
 2. **URL を複数** … `urls.txt` に **1 行 1 URL**（`#` 始まりと空行は無視）で書き、`./run_pipeline_urls.sh` または `./run_pipeline_urls.sh /path/to/urls.txt` で **上から順に** `run_pipeline.sh` が走り、**それぞれメールで届く**（起動間隔は `URLS_PIPELINE_GAP_SEC`、既定 65 秒）。`BUILD_HTML_SITE=1` なら **全件のキュー完了後に `docs/` を1回生成**（後述）。
-3. **チャンネル単位** … `./run_channel.sh --fromto 0:10 --url 'https://www.youtube.com/@…'` のように **`--fromto` で範囲**を指定すると、その範囲の動画を **順番に**要約パイプラインへ回す（`b01` はチャンネル「動画」タブ相当の **先頭を 0** とした添字で、**多くのチャンネルでは新しい動画が上のため 0 が最新側**。範囲は両端含む。例 `0:10` は 11 本）。
+3. **チャンネル単位** … `./run_channel.sh --fromto 0:10 --url 'https://www.youtube.com/@…'` のように **`--fromto` で範囲**を指定すると、その範囲の動画を **順番に**要約パイプラインへ回す（`b01` はチャンネル「動画」タブ相当の **先頭を 0** とした添字で、**多くのチャンネルでは新しい動画が上のため 0 が最新側**。範囲は両端含む。例 `0:10` は 11 本）。成果物は **`output/<スラッグ>_<公開日YYYYMMDD>_<videoid>/`**。同じ videoid が既にあればスキップ。
 4. **要約を Web 公開** … `output/` の要約から **`docs/`** に静的 HTML を生成し、**GitHub Pages** で公開（`build_html_site.py` / `BUILD_HTML_SITE=1`）。後述。
 
 **Google Cloud Shell**（Google アカウントがあれば無料枠で使える）で動かす手順を下にまとめています。ローカルは **Git Bash / WSL / Linux** などの Bash が使える環境を想定しています。
@@ -202,6 +202,7 @@ docs/
 - **`output/`** は `.gitignore` 済み（ローカルのみ）。**公開するのは `docs/`** をコミットして push する想定です。
 - 実行のたびに **`output/` 全体を走査して `docs/` を上書き再生成**します（差分更新ではありません）。
 - 同じ `video_id` のフォルダが複数ある場合は **最新の1件だけ**を採用します。
+- 一覧の並びは **チャンネルスラッグ昇順 → 公開日降順**（フォルダ名 `output/<スラッグ>_<YYYYMMDD>_<videoid>/` から判定。公開日が無い旧フォルダは取得時刻で代替）。
 - 一覧の **カテゴリタグ**（投資・不動産・年金・税制・AI など）は **`categories.yaml`** のキーワードで自動判定します（最大2個）。カテゴリの追加・キーワード調整はこのファイルを編集してください。
 
 #### 単体で `docs/` を生成する
@@ -273,7 +274,7 @@ https://sinzy0925.github.io/py_youtube-transcript-api/
 
 ### `run_channel.sh`（チャンネル単位で videoid 取得 → 各動画へ `run_pipeline.sh`）
 
-**yt-dlp** でチャンネルの動画 ID を `videoids.txt` に書き、その ID ごとに **`run_pipeline.sh`** を順に起動します（`requirements.txt` に `yt-dlp` あり）。
+**yt-dlp** でチャンネルの動画 ID と公開日を `videoids.txt` に書き、その ID ごとに **`run_pipeline.sh`** を順に起動します（`requirements.txt` に `yt-dlp` あり）。
 
 **メインの使い方（例）:**
 
@@ -300,15 +301,15 @@ chmod +x run_channel.sh
 
 | 変数 | 意味 |
 |------|------|
-| `CHANNEL_PIPELINE_GAP_SEC` | 連続で `run_pipeline.sh` を叩く際の**最短間隔（秒）**。既定 **61**（429 回避のための間引き）。 |
+| `CHANNEL_PIPELINE_GAP_SEC` | 1 件のキュー処理が**終わってから**次を登録するまでの待機秒。既定 **61**（429 回避のための間引き）。 |
 | `CHANNEL_LOG` | `nohup` 時の**統合ログ**のパス。未設定時はリポジトリ直下の **`channel.log`**。 |
 | `CHANNEL_OUTPUT_SLUG` | 成果物・ログのファイル名に使うスラッグ。**未設定時はチャンネル URL から推定**（例: `@foo` → `foo`）。 |
 
 **その他**
 
 - 親ディレクトリへシンボリックリンクを張る **`junbi.sh`** に **`run_channel.sh` も含まれます**（`run_pipeline.sh` と同様）。
-- **`run_pipeline.sh` 本体は変更しません。** チャンネル連続時は `PIPELINE_LOG` で `batch_channel_<チャンネルスラッグ>_<チャンネル内インデックス>.log` に分け、`PIPELINE_OUTPUT_DIR` で成果物を `output/<スラッグ>_<インデックス>/` に出すように起動します（スラッグは URL から推定。`CHANNEL_OUTPUT_SLUG` で上書き可）。キューには **URL・出力 dir・ログ** をセットで登録するため、動画ごとに別フォルダへ保存されます。
-- **`BUILD_HTML_SITE=1`** のとき、チャンネル一括の **全件キュー完了後** に `docs/` を **1 回** 再生成します（各動画処理中は `PIPELINE_SKIP_BUILD_HTML`）。
+- **`run_pipeline.sh` 本体は変更しません。** チャンネル連続時は `PIPELINE_LOG` で `batch_channel_<スラッグ>_<公開日YYYYMMDD>_<videoid>.log` に分け、`PIPELINE_OUTPUT_DIR` で成果物を **`output/<スラッグ>_<公開日>_<videoid>/`** に出します（スラッグは URL から推定。`CHANNEL_OUTPUT_SLUG` で上書き可）。**同じ videoid の成果物が既にあればスキップ**します（旧 `output/<スラッグ>_<添字>/` 形式も `video_info.json` で判定）。
+- **`BUILD_HTML_SITE=1`** のとき、チャンネル一括で **新規処理が1件以上あった場合**、キュー完了後に `docs/` を **1 回** 再生成します（各動画処理中は `PIPELINE_SKIP_BUILD_HTML`）。
 
 ## 使用ライブラリ
 

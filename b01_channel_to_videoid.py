@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-b01 — チャンネル URL から動画 ID を取得し、スクリプトと同じフォルダの videoids.txt に上書き保存する。
+b01 — チャンネル URL から動画 ID と公開日を取得し、videoids.txt に上書き保存する。
 
 前提（あいまいさの解決）:
   - --fromto の A:B は、チャンネル「動画」タブ相当のプレイリストにおける **先頭（画面上部）を 0 とした 0-based の添字範囲（両端含む）**。
   - 多くのチャンネルでは YouTube の並びが **新しい動画が上**のため、**小さい添字ほど新しい動画**になる（例: 0 が最新付近）。
-  - yt-dlp の extract_flat ではエントリに playlist_index が付かないことが多く、その場合は **返却順＝上記の並び**をそのまま使う（下の sort は同一キーでは順序不変）。
+  - yt-dlp の extract_flat ではエントリに playlist_index / upload_date が付かないことが多い。
+    ID 列挙は flat、公開日は各動画を個別に取得する。
+  - videoids.txt の各行: `<videoid>\\t<YYYYMMDD>`（公開日。取得不可時は空欄）。
   - videoids.txt の出力先はこの .py と同じディレクトリ。
 
 依存: yt-dlp（requirements.txt に記載）
@@ -18,6 +20,7 @@ b01 — チャンネル URL から動画 ID を取得し、スクリプトと同
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from pathlib import Path
 
@@ -27,6 +30,8 @@ if hasattr(sys.stdout, "reconfigure"):
         sys.stderr.reconfigure(encoding="utf-8")
     except OSError:
         pass
+
+_UPLOAD_DATE_RE = re.compile(r"^\d{8}$")
 
 
 def _script_dir() -> Path:
@@ -66,6 +71,30 @@ def normalize_channel_videos_url(url: str) -> str:
     return u + "/videos"
 
 
+def _normalize_upload_date(raw: object) -> str:
+    if raw is None:
+        return ""
+    s = str(raw).strip()
+    if _UPLOAD_DATE_RE.fullmatch(s):
+        return s
+    return ""
+
+
+def fetch_upload_date(video_id: str) -> str:
+    """単一動画の公開日 YYYYMMDD を返す（不可時は空文字）。"""
+    import yt_dlp
+
+    opts: dict = {
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+    }
+    url = f"https://www.youtube.com/watch?v={video_id}"
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(url, download=False) or {}
+    return _normalize_upload_date(info.get("upload_date"))
+
+
 def fetch_video_ids_playlist(url: str, start: int, end: int) -> list[str]:
     """yt-dlp の playlist_items（1-based）で start+1 .. end+1 を取り、extract_flat 時の返却順で ID を返す。"""
     import yt_dlp
@@ -92,9 +121,27 @@ def fetch_video_ids_playlist(url: str, start: int, end: int) -> list[str]:
     return [str(e["id"]) for e in entries]
 
 
+def fetch_videos_with_upload_dates(url: str, start: int, end: int) -> list[tuple[str, str]]:
+    """(videoid, YYYYMMDD or '') のリスト。"""
+    ids = fetch_video_ids_playlist(url, start, end)
+    out: list[tuple[str, str]] = []
+    for i, vid in enumerate(ids, start=1):
+        try:
+            date = fetch_upload_date(vid)
+        except Exception as e:
+            print(f"警告: 公開日取得失敗 {vid}: {e}", file=sys.stderr)
+            date = ""
+        if not date:
+            print(f"警告: 公開日なし {vid}（videoids.txt では日付欄を空にします）", file=sys.stderr)
+        else:
+            print(f"公開日: [{i}/{len(ids)}] {vid} → {date}")
+        out.append((vid, date))
+    return out
+
+
 def main() -> int:
     p = argparse.ArgumentParser(
-        description="YouTube チャンネル URL から videoid を取得し videoids.txt に書き込む",
+        description="YouTube チャンネル URL から videoid と公開日を取得し videoids.txt に書き込む",
     )
     p.add_argument(
         "channel_url",
@@ -118,25 +165,26 @@ def main() -> int:
     out_path = _script_dir() / "videoids.txt"
 
     try:
-        ids = fetch_video_ids_playlist(url, start, end)
+        rows = fetch_videos_with_upload_dates(url, start, end)
     except Exception as e:
         print(f"取得に失敗しました: {e}", file=sys.stderr)
         return 1
 
     expected = end - start + 1
-    if len(ids) < expected:
+    if len(rows) < expected:
         print(
-            f"警告: 要求 {expected} 件に対し {len(ids)} 件しか取得できませんでした（チャンネルが短いか、取得制限の可能性）",
+            f"警告: 要求 {expected} 件に対し {len(rows)} 件しか取得できませんでした（チャンネルが短いか、取得制限の可能性）",
             file=sys.stderr,
         )
 
-    if not ids:
+    if not rows:
         print("動画 ID が1件も取得できませんでした。", file=sys.stderr)
         return 1
 
-    text = "\n".join(ids) + "\n"
+    lines = [f"{vid}\t{date}" if date else vid for vid, date in rows]
+    text = "\n".join(lines) + "\n"
     out_path.write_text(text, encoding="utf-8")
-    print(f"{len(ids)} 件を {out_path} に書き込みました")
+    print(f"{len(rows)} 件を {out_path} に書き込みました（形式: videoid[TAB]YYYYMMDD）")
     return 0
 
 

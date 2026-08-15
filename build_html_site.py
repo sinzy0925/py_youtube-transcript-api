@@ -3,6 +3,8 @@
 """
 静的サイト生成: output/ の summary.txt → docs/index.html + docs/contents/<video_id>.html
 
+一覧はチャンネルスラッグ昇順 → 公開日降順（output/<slug>_<YYYYMMDD>_<videoid>/ から判定）。
+
 単体:
     python build_html_site.py
     python build_html_site.py --archive-dir output/20260624_172226_AwQYphhy
@@ -172,6 +174,24 @@ a { color: inherit; text-decoration: none; }
   background: #fff;
   border-radius: 10px;
 }
+.index-channel {
+  list-style: none;
+  margin: 1.1rem 0 0.15rem;
+  padding: 0.35rem 0.25rem 0.15rem;
+  background: transparent;
+  box-shadow: none;
+}
+.index-channel:first-child {
+  margin-top: 0;
+}
+.index-channel h2 {
+  margin: 0;
+  font-size: 0.82rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: none;
+  color: #5f6368;
+}
 @media (max-width: 520px) {
   body { padding: 1rem 0.75rem 2rem; }
   .index-item-link {
@@ -208,6 +228,8 @@ class ArchiveEntry:
     watch_url: str
     sort_key: str
     summary_path: Path
+    channel_slug: str = ""
+    publish_date: str = ""  # YYYYMMDD（公開日。フォルダ名から）
 
 
 def _script_root() -> Path:
@@ -352,6 +374,68 @@ def _sort_key_from_dir_name(name: str) -> str:
     return name
 
 
+_YT_VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
+
+
+def _parse_archive_dir_meta(name: str) -> tuple[str, str]:
+    """
+    成果物フォルダ名から (channel_slug, publish_yyyymmdd) を返す。
+    例: ga-ko_20260807_1vMLedTLeyw → ("ga-ko", "20260807")
+    """
+    # <slug>_<YYYYMMDD>_<videoid>
+    m = re.fullmatch(r"(.+)_(\d{8})_([A-Za-z0-9_-]{11})", name)
+    if m:
+        return m.group(1), m.group(2)
+    # 旧: YYYYMMDD_HHMMSS_…
+    m = re.match(r"^(\d{8})_\d{6}", name)
+    if m:
+        return "", m.group(1)
+    # 旧チャンネル添字: <slug>_<n>
+    m = re.fullmatch(r"(.+)_(\d+)", name)
+    if m:
+        return m.group(1), ""
+    return "", ""
+
+
+def _entry_recency_key(entry: ArchiveEntry) -> str:
+    """同一 video_id のどちらを残すか（大きい方を優先）。"""
+    if entry.publish_date and re.fullmatch(r"\d{8}", entry.publish_date):
+        return f"{entry.publish_date}T99:99:99"
+    return entry.sort_key or ""
+
+
+def _sort_entries_channel_then_publish_desc(entries: list[ArchiveEntry]) -> list[ArchiveEntry]:
+    """チャンネル名昇順 → 公開日降順（無ければ sort_key 降順）。"""
+
+    def _key(e: ArchiveEntry) -> tuple:
+        ch = (e.channel_slug or "\uffff").casefold()
+        pub = e.publish_date if (e.publish_date and e.publish_date.isdigit()) else "00000000"
+        sk = e.sort_key or ""
+        return (ch, pub, sk)
+
+    # まずチャンネル↑・日付↑・sort_key↑で並べ、チャンネルごとに日付を反転
+    ordered = sorted(entries, key=_key)
+    result: list[ArchiveEntry] = []
+    i = 0
+    n = len(ordered)
+    while i < n:
+        ch = ordered[i].channel_slug or ""
+        j = i + 1
+        while j < n and (ordered[j].channel_slug or "") == ch:
+            j += 1
+        group = ordered[i:j]
+        group.sort(
+            key=lambda e: (
+                e.publish_date if (e.publish_date and e.publish_date.isdigit()) else "00000000",
+                e.sort_key or "",
+            ),
+            reverse=True,
+        )
+        result.extend(group)
+        i = j
+    return result
+
+
 def _entry_from_archive_dir(archive_dir: Path) -> Optional[ArchiveEntry]:
     summary_path = archive_dir / "summary.txt"
     if not summary_path.is_file():
@@ -367,11 +451,21 @@ def _entry_from_archive_dir(archive_dir: Path) -> Optional[ArchiveEntry]:
     if not body.strip():
         body = summary_text.strip()
 
+    channel_slug, publish_date = _parse_archive_dir_meta(archive_dir.name)
+    info_upload = str(info.get("upload_date") or info.get("publish_date") or "").strip()
+    if re.fullmatch(r"\d{8}", info_upload):
+        publish_date = info_upload
+
     video_id = (info.get("video_id") or "").strip()
     if not video_id:
         m = re.search(r"[?&]v=([A-Za-z0-9_-]{11})", url_from_summary)
         if m:
             video_id = m.group(1)
+    if not video_id:
+        # フォルダ末尾が videoid なら採用
+        tail = archive_dir.name.rsplit("_", 1)[-1]
+        if _YT_VIDEO_ID_RE.fullmatch(tail):
+            video_id = tail
     if not video_id:
         return None
 
@@ -380,7 +474,11 @@ def _entry_from_archive_dir(archive_dir: Path) -> Optional[ArchiveEntry]:
     )
     watch_url = (url_from_summary or _video_watch_url(video_id)).strip()
     fetched = (info.get("fetched_utc") or "").strip()
-    sort_key = fetched or _sort_key_from_dir_name(archive_dir.name)
+    if publish_date and re.fullmatch(r"\d{8}", publish_date):
+        # 一覧・ソート用。公開日のみのときは日付キー
+        sort_key = f"{publish_date}_000000"
+    else:
+        sort_key = fetched or _sort_key_from_dir_name(archive_dir.name)
 
     return ArchiveEntry(
         archive_dir=archive_dir,
@@ -389,6 +487,8 @@ def _entry_from_archive_dir(archive_dir: Path) -> Optional[ArchiveEntry]:
         watch_url=watch_url,
         sort_key=sort_key,
         summary_path=summary_path,
+        channel_slug=channel_slug,
+        publish_date=publish_date if re.fullmatch(r"\d{8}", publish_date or "") else "",
     )
 
 
@@ -405,12 +505,10 @@ def discover_archives(output_root: Path) -> list[ArchiveEntry]:
         if entry is None:
             continue
         prev = by_id.get(entry.video_id)
-        if prev is None or entry.sort_key >= prev.sort_key:
+        if prev is None or _entry_recency_key(entry) >= _entry_recency_key(prev):
             by_id[entry.video_id] = entry
 
-    entries = list(by_id.values())
-    entries.sort(key=lambda e: e.sort_key, reverse=True)
-    return entries
+    return _sort_entries_channel_then_publish_desc(list(by_id.values()))
 
 
 def _summary_body_html(summary_path: Path) -> str:
@@ -455,6 +553,10 @@ def _parse_sort_datetime(sort_key: str) -> Optional[datetime]:
     if m:
         y, mo, d, h, mi, s = (int(x) for x in m.groups())
         return datetime(y, mo, d, h, mi, s)
+    m = re.fullmatch(r"(\d{4})(\d{2})(\d{2})", sort_key)
+    if m:
+        y, mo, d = (int(x) for x in m.groups())
+        return datetime(y, mo, d)
     if "T" in sort_key:
         try:
             return datetime.fromisoformat(sort_key.replace("Z", "+00:00")).replace(tzinfo=None)
@@ -463,11 +565,19 @@ def _parse_sort_datetime(sort_key: str) -> Optional[datetime]:
     return None
 
 
-def _format_index_date_parts(sort_key: str) -> tuple[str, str, str]:
-    """一覧用 (ISO日付, 時刻, datetime属性) を返す。"""
-    dt = _parse_sort_datetime(sort_key)
+def _format_index_date_parts(entry: ArchiveEntry) -> tuple[str, str, str]:
+    """一覧用 (ISO日付, 時刻, datetime属性) を返す。公開日があれば日付のみ。"""
+    if entry.publish_date and re.fullmatch(r"\d{8}", entry.publish_date):
+        y, mo, d = entry.publish_date[0:4], entry.publish_date[4:6], entry.publish_date[6:8]
+        day = f"{y}-{mo}-{d}"
+        return day, "", f"{day}T00:00"
+    dt = _parse_sort_datetime(entry.sort_key)
     if dt is None:
         return "", "", ""
+    # 公開日由来の 000000 時刻は時刻欄を出さない
+    if dt.hour == 0 and dt.minute == 0 and dt.second == 0 and entry.sort_key.endswith("_000000"):
+        day = dt.strftime("%Y-%m-%d")
+        return day, "", f"{day}T00:00"
     return (
         dt.strftime("%Y-%m-%d"),
         dt.strftime("%H:%M"),
@@ -485,17 +595,28 @@ def _write_index(
     out_path = html_dir / "index.html"
     cat_cfg = category_config or _load_category_config()
     items: list[str] = []
+    prev_channel: Optional[str] = None
     for entry in entries:
+        ch = entry.channel_slug or ""
+        if ch != prev_channel:
+            label = ch if ch else "その他"
+            items.append(
+                f'    <li class="index-channel"><h2>{html.escape(label)}</h2></li>'
+            )
+            prev_channel = ch
         title_esc = html.escape(entry.title)
         href = html.escape(f"contents/{entry.video_id}.html", quote=True)
         tags = _classify_tags(_classification_text(entry, cat_cfg.summary_preview_chars), cat_cfg)
         tags_html = _render_index_tags(tags)
-        day, clock, dt_attr = _format_index_date_parts(entry.sort_key)
+        day, clock, dt_attr = _format_index_date_parts(entry)
         if day:
+            time_span = (
+                f'<span class="time">{html.escape(clock)}</span>' if clock else ""
+            )
             date_html = (
                 f'<time class="index-item-date" datetime="{html.escape(dt_attr)}">'
                 f"{html.escape(day)}"
-                f'<span class="time">{html.escape(clock)}</span>'
+                f"{time_span}"
                 f"</time>"
             )
         else:
@@ -561,7 +682,6 @@ def build_html_site(
 
     entries = discover_archives(output_root)
     if archive_dirs:
-        seen = {e.video_id for e in entries}
         for ad in archive_dirs:
             entry = _entry_from_archive_dir(Path(ad))
             if entry is None:
@@ -569,11 +689,10 @@ def build_html_site(
             prev = next((e for e in entries if e.video_id == entry.video_id), None)
             if prev is None:
                 entries.append(entry)
-            elif entry.sort_key >= prev.sort_key:
+            elif _entry_recency_key(entry) >= _entry_recency_key(prev):
                 entries.remove(prev)
                 entries.append(entry)
-            seen.add(entry.video_id)
-        entries.sort(key=lambda e: e.sort_key, reverse=True)
+        entries = _sort_entries_channel_then_publish_desc(entries)
 
     written = 0
     for entry in entries:
