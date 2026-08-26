@@ -404,8 +404,12 @@ def _diagnose_gemini_error(
             )
     elif _gemini_invalid_api_key_error(err):
         lines.append("  診断: APIキー無効。別 GOOGLE_API_KEY_n への切替を推奨。")
-    elif code in (400, 403):
-        lines.append("  診断: リクエスト内容または権限の問題。入力サイズ・ツール設定を確認。")
+    elif _gemini_permission_denied_error(err):
+        lines.append(
+            "  診断: 権限拒否（403）。プロジェクト拒否の場合は別 GOOGLE_API_KEY_n への切替を推奨。"
+        )
+    elif code == 400:
+        lines.append("  診断: リクエスト内容の問題。入力サイズ・ツール設定を確認。")
     else:
         lines.append(f"  診断: {purpose} の再試行可否はエラー種別次第（上記参照）。")
 
@@ -570,11 +574,24 @@ def _gemini_invalid_api_key_error(err: BaseException) -> bool:
     )
 
 
+def _gemini_permission_denied_error(err: BaseException) -> bool:
+    """403 / PERMISSION_DENIED。プロジェクト拒否など別キーで解消しうる。"""
+    payload = _parse_gemini_error_payload(err)
+    if payload.get("code") == 403 or payload.get("status") == "PERMISSION_DENIED":
+        return True
+    msg = f"{type(err).__name__}: {err}".lower()
+    return "permission_denied" in msg or "permission denied" in msg
+
+
 def _should_try_next_api_key(err: BaseException) -> bool:
     """複数キーがあるとき、別キーへの切り替えを試すか。"""
     if api_key_manager.key_count <= 1:
         return False
-    return _transient_gemini_error(err) or _gemini_invalid_api_key_error(err)
+    return (
+        _transient_gemini_error(err)
+        or _gemini_invalid_api_key_error(err)
+        or _gemini_permission_denied_error(err)
+    )
 
 
 def _gemini_max_api_retries() -> int:
@@ -1059,105 +1076,108 @@ def generate_summary_to_file(
             False, None, include_truth_assessment, False, None, None
         )
 
-    summary_models = _summary_model_chain()
-    truth_models = _truth_model_chain()
-    print(f"要約 Gemini モデル試行順: {', '.join(summary_models)} : ({PYTHON_NAME})")
-    if include_truth_assessment:
-        print(f"真実度 Gemini モデル試行順: {', '.join(truth_models)} : ({PYTHON_NAME})")
+    # キーを1つでも進めたら成功・失敗を問わずセッションを残す（失敗時の同一キー連打を防ぐ）
+    try:
+        summary_models = _summary_model_chain()
+        truth_models = _truth_model_chain()
+        print(f"要約 Gemini モデル試行順: {', '.join(summary_models)} : ({PYTHON_NAME})")
+        if include_truth_assessment:
+            print(f"真実度 Gemini モデル試行順: {', '.join(truth_models)} : ({PYTHON_NAME})")
 
-    categories = detect_categories_for_summary(video_title, transcript_text)
-    if categories:
-        print(f"要約カテゴリ判定: {', '.join(categories)} : ({PYTHON_NAME})")
-    reference_block = build_reference_prompt_block(categories)
+        categories = detect_categories_for_summary(video_title, transcript_text)
+        if categories:
+            print(f"要約カテゴリ判定: {', '.join(categories)} : ({PYTHON_NAME})")
+        reference_block = build_reference_prompt_block(categories)
 
-    prompt = build_prompt(
-        prompt_mode,
-        prompt_text,
-        video_title,
-        video_url,
-        reference_block=reference_block,
-    )
-    s_parts = [prompt, "\n\n--- 文字起こし本文 ---\n", transcript_text]
-    print(f"要約（モデル列: {', '.join(summary_models)}） : ({PYTHON_NAME})")
-    summary_gen = _gemini_generate_loop(
-        api_key,
-        summary_models,
-        s_parts,
-        temperature=0.2,
-        max_output_tokens=12000,
-        purpose="要約",
-    )
-    body, api_key, summary_model = summary_gen.text, summary_gen.api_key, summary_gen.model
-    if not body:
-        return SummaryToFileResult(
-            ok=False,
-            summary_model=None,
-            truth_requested=truth_requested,
-            truth_ok=False,
-            truth_strategy_label=None,
-            truth_model=None,
-        )
-
-    summary_key_label = api_key_manager.format_key_log(api_key=api_key)
-    print(f"要約: 使用キー {summary_key_label} : ({PYTHON_NAME})")
-
-    truth_block = ""
-    if include_truth_assessment:
-        delay = _truth_delay_after_summary_sec()
-        if delay > 0:
-            print(
-                f"真実度開始前 {delay}s 待機（要約キー {summary_key_label} → 次キーへ） : ({PYTHON_NAME})"
-            )
-            time.sleep(delay)
-        next_truth_key = api_key_manager.get_next_key_sync()
-        if next_truth_key:
-            api_key = next_truth_key
-        print(
-            f"真実度: 開始キー {api_key_manager.format_key_log(api_key=api_key)} : ({PYTHON_NAME})"
-        )
-        use_search = _truth_assessment_grounding_enabled()
-        if use_search:
-            print(
-                f"真実度（要約ベース）— 検索+JSON・モデル最大{len(truth_models)}・"
-                f"リトライ{_truth_attempts_per_model() - 1}・間隔{int(_truth_retry_delay_sec())}s・"
-                f"フォールバック={'ON' if _truth_fallback_on_search_fail() else 'OFF'} : ({PYTHON_NAME})"
-            )
-        else:
-            print(
-                f"真実度（要約ベース）— TRUTH_ASSESSMENT_GROUNDING=0 : ({PYTHON_NAME})"
-            )
-        t_raw, api_key, truth_label, truth_model, search_used = _run_truth_on_summary(
-            api_key,
-            truth_models,
+        prompt = build_prompt(
+            prompt_mode,
+            prompt_text,
             video_title,
             video_url,
-            body,
-            reference_block,
-            want_grounding=use_search,
+            reference_block=reference_block,
         )
-        truth_ok = bool(t_raw)
-        if t_raw:
-            sc, rsn = _parse_truth_json(t_raw)
-            truth_block = _format_truth_block(sc, rsn, search_used=search_used)
-        else:
-            truth_block = _format_truth_failure_block()
-            print(f"[真実度] 確認失敗（要約は成功） : ({PYTHON_NAME})")
+        s_parts = [prompt, "\n\n--- 文字起こし本文 ---\n", transcript_text]
+        print(f"要約（モデル列: {', '.join(summary_models)}） : ({PYTHON_NAME})")
+        summary_gen = _gemini_generate_loop(
+            api_key,
+            summary_models,
+            s_parts,
+            temperature=0.2,
+            max_output_tokens=12000,
+            purpose="要約",
+        )
+        body, api_key, summary_model = summary_gen.text, summary_gen.api_key, summary_gen.model
+        if not body:
+            return SummaryToFileResult(
+                ok=False,
+                summary_model=None,
+                truth_requested=truth_requested,
+                truth_ok=False,
+                truth_strategy_label=None,
+                truth_model=None,
+            )
 
-    header = f"タイトル：{video_title}\nURL：{video_url}\n\n"
-    out = header + truth_block + body
-    with open(output_path, "w", encoding="utf-8") as f:
-        f.write(out)
-    try:
-        api_key_manager.save_session()
-    except Exception as se:
-        print(
-            f"警告: API キーセッションの保存に失敗: {se} : ({PYTHON_NAME})"
+        summary_key_label = api_key_manager.format_key_log(api_key=api_key)
+        print(f"要約: 使用キー {summary_key_label} : ({PYTHON_NAME})")
+
+        truth_block = ""
+        if include_truth_assessment:
+            delay = _truth_delay_after_summary_sec()
+            if delay > 0:
+                print(
+                    f"真実度開始前 {delay}s 待機（要約キー {summary_key_label} → 次キーへ） : ({PYTHON_NAME})"
+                )
+                time.sleep(delay)
+            next_truth_key = api_key_manager.get_next_key_sync()
+            if next_truth_key:
+                api_key = next_truth_key
+            print(
+                f"真実度: 開始キー {api_key_manager.format_key_log(api_key=api_key)} : ({PYTHON_NAME})"
+            )
+            use_search = _truth_assessment_grounding_enabled()
+            if use_search:
+                print(
+                    f"真実度（要約ベース）— 検索+JSON・モデル最大{len(truth_models)}・"
+                    f"リトライ{_truth_attempts_per_model() - 1}・間隔{int(_truth_retry_delay_sec())}s・"
+                    f"フォールバック={'ON' if _truth_fallback_on_search_fail() else 'OFF'} : ({PYTHON_NAME})"
+                )
+            else:
+                print(
+                    f"真実度（要約ベース）— TRUTH_ASSESSMENT_GROUNDING=0 : ({PYTHON_NAME})"
+                )
+            t_raw, api_key, truth_label, truth_model, search_used = _run_truth_on_summary(
+                api_key,
+                truth_models,
+                video_title,
+                video_url,
+                body,
+                reference_block,
+                want_grounding=use_search,
+            )
+            truth_ok = bool(t_raw)
+            if t_raw:
+                sc, rsn = _parse_truth_json(t_raw)
+                truth_block = _format_truth_block(sc, rsn, search_used=search_used)
+            else:
+                truth_block = _format_truth_failure_block()
+                print(f"[真実度] 確認失敗（要約は成功） : ({PYTHON_NAME})")
+
+        header = f"タイトル：{video_title}\nURL：{video_url}\n\n"
+        out = header + truth_block + body
+        with open(output_path, "w", encoding="utf-8") as f:
+            f.write(out)
+        return SummaryToFileResult(
+            ok=True,
+            summary_model=summary_model,
+            truth_requested=truth_requested,
+            truth_ok=truth_ok,
+            truth_strategy_label=truth_label,
+            truth_model=truth_model,
         )
-    return SummaryToFileResult(
-        ok=True,
-        summary_model=summary_model,
-        truth_requested=truth_requested,
-        truth_ok=truth_ok,
-        truth_strategy_label=truth_label,
-        truth_model=truth_model,
-    )
+    finally:
+        try:
+            api_key_manager.save_session()
+        except Exception as se:
+            print(
+                f"警告: API キーセッションの保存に失敗: {se} : ({PYTHON_NAME})"
+            )
