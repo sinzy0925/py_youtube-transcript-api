@@ -3,7 +3,7 @@
 """
 a03 — ステップ2: 文字起こしを Gemini で要約し summary.txt へ（単体実行可）
     処理順: (1) financial 要約 + reference_sources 注入 → (2) 要約文ベースの軽量真実度（検索+JSON、失敗 OK）。
-    真実度: モデル最大2・リトライ1・間隔60秒・要約後30秒待機・真実度は次キーから・リトライ毎キー切替が既定。
+    真実度: モデル最大2・リトライ1・間隔5秒・要約後30秒待機・真実度は次キーから・リトライ毎キー切替が既定。
     前: a01 で transcript.txt 作成。a02 のプロンプトを import。次: a04 メール。
     API キーは m03_api_key_manager（ローテーション・.session_data.json 永続化）を優先利用。
 """
@@ -93,10 +93,10 @@ def _truth_attempts_per_model() -> int:
 
 def _truth_retry_delay_sec() -> float:
     try:
-        v = float((os.getenv("GEMINI_TRUTH_RETRY_DELAY_SEC") or "60").strip())
+        v = float((os.getenv("GEMINI_TRUTH_RETRY_DELAY_SEC") or "5").strip())
         return max(0.0, v)
     except ValueError:
-        return 60.0
+        return 5.0
 
 
 def _truth_delay_after_summary_sec() -> float:
