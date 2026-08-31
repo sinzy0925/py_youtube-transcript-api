@@ -520,7 +520,12 @@ _run_pipeline_execute_item() {
     echo "=== パイプライン実行（直列・完了待ち）: ${_url} ===" >&2
   fi
   if ! "${VENV_PY}" -u "${PIPELINE_ITEM_ARGS[@]}" "${_url}" >"${_log_path}" 2>&1; then
-    echo "警告: パイプライン終了コード非0: ${_url} （ログ: ${_log_path}）" >&2
+    local _ec=$?
+    if [[ "${_ec}" -eq 2 ]]; then
+      echo "エラー: 要約失敗（終了コード2）: ${_url} （ログ: ${_log_path}）" >&2
+    else
+      echo "警告: パイプライン終了コード非0 (${_ec}): ${_url} （ログ: ${_log_path}）" >&2
+    fi
     return 1
   fi
   return 0
@@ -586,6 +591,7 @@ _drain_execute_urls_queue() {
 
   echo "=== execute_urls キュー処理開始 ===" >&2
   local _n=0
+  local _fail=0
   while _execute_urls_read_first_entry "${EXECUTE_URLS_TXT}"; do
     _n=$((_n + 1))
     if [[ -n "${EXEC_ENTRY_OUT}" ]]; then
@@ -593,11 +599,16 @@ _drain_execute_urls_queue() {
     else
       echo "--- キュー [${_n}] ${EXEC_ENTRY_URL} ---" >&2
     fi
-    _run_pipeline_execute_item "${EXEC_ENTRY_URL}" "${EXEC_ENTRY_OUT}" "${EXEC_ENTRY_LOG:-${PIPELINE_LOG}}" || true
+    if ! _run_pipeline_execute_item "${EXEC_ENTRY_URL}" "${EXEC_ENTRY_OUT}" "${EXEC_ENTRY_LOG:-${PIPELINE_LOG}}"; then
+      _fail=$((_fail + 1))
+    fi
     _execute_urls_pop_first "${EXECUTE_URLS_TXT}"
     echo "キューから先頭行を削除しました: ${EXECUTE_URLS_TXT}" >&2
   done
-  echo "=== execute_urls キュー処理完了（処理件数: ${_n}） ===" >&2
+  echo "=== execute_urls キュー処理完了（処理件数: ${_n}、失敗: ${_fail}） ===" >&2
+  if [[ "${_fail}" -gt 0 ]]; then
+    return 1
+  fi
 }
 
 _spawn_execute_queue_drainer() {

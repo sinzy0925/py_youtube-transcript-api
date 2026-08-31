@@ -21,6 +21,7 @@ import argparse
 import json
 import os
 import sys
+import time
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -46,11 +47,35 @@ from a01_get_transcript import (
     video_watch_url,
 )
 from a03_gemini_summary import SummaryToFileResult, generate_summary_to_file
-from a04_send_result_email import send_result_email, write_summary_unavailable_placeholder
+from a04_send_result_email import (
+    is_summary_unavailable_file,
+    send_result_email,
+    write_summary_unavailable_placeholder,
+)
 from build_html_site import build_html_site
 
 PYTHON = os.path.basename(__file__)
 DEFAULT_VIDEO = "https://www.youtube.com/watch?v=8W6Qn2hNrAM"
+
+# 終了コード: 字幕取得失敗=1、要約失敗（全リトライ後）=2
+EXIT_TRANSCRIPT_FAIL = 1
+EXIT_SUMMARY_FAIL = 2
+
+
+def _pipeline_summary_max_attempts() -> int:
+    try:
+        v = int((os.getenv("PIPELINE_SUMMARY_MAX_ATTEMPTS") or "3").strip())
+        return max(1, v)
+    except ValueError:
+        return 3
+
+
+def _pipeline_summary_retry_delay_sec() -> float:
+    try:
+        v = float((os.getenv("PIPELINE_SUMMARY_RETRY_DELAY_SEC") or "5").strip())
+        return max(0.0, v)
+    except ValueError:
+        return 5.0
 
 
 def _env_truthy(name: str) -> bool:
@@ -221,7 +246,7 @@ def run_pipeline(
         except Exception as e:
             print(f"字幕取得に失敗: {e} : ({PYTHON})", file=sys.stderr)
             _maybe_reboot_google_cloud_shell_after_youtube_ip_block(e)
-            return 1
+            return EXIT_TRANSCRIPT_FAIL
         watch_url = video_watch_url(video_id)
         try:
             title = _fetch_title_via_oembed(watch_url)
@@ -234,19 +259,50 @@ def run_pipeline(
             transcript_text = f.read()
         print(f"      video_id={video_id} title={title!r}")
 
-        # --- (2) 要約: a02+a03 ---
+        # --- (2) 要約: a02+a03（失敗時はその場でリトライ） ---
         summary_path = os.path.join(archive_dir, "summary.txt")
-        print(f"[2/3] 要約（Gemini）→ {summary_path}")
-        sum_res = generate_summary_to_file(
-            transcript_text,
-            summary_path,
-            prompt_mode=prompt_mode,
-            prompt_text=prompt_text,
-            video_title=title,
-            video_url=watch_url,
-            include_truth_assessment=not skip_truth_assessment,
-        )
-        if not sum_res.ok:
+        max_sum_attempts = _pipeline_summary_max_attempts()
+        sum_res: Optional[SummaryToFileResult] = None
+        for sum_attempt in range(1, max_sum_attempts + 1):
+            if sum_attempt > 1:
+                delay = _pipeline_summary_retry_delay_sec()
+                print(
+                    f"[2/3] 要約リトライ ({sum_attempt}/{max_sum_attempts}) "
+                    f"→ {summary_path} : ({PYTHON})"
+                )
+                if os.path.isfile(summary_path) and is_summary_unavailable_file(summary_path):
+                    try:
+                        os.remove(summary_path)
+                    except OSError as e:
+                        print(
+                            f"警告: 要約プレースホルダ削除に失敗: {e} : ({PYTHON})",
+                            file=sys.stderr,
+                        )
+                if delay > 0:
+                    print(f"[2/3] 要約リトライ前 {delay}s 待機 : ({PYTHON})")
+                    time.sleep(delay)
+            else:
+                print(f"[2/3] 要約（Gemini）→ {summary_path}")
+            sum_res = generate_summary_to_file(
+                transcript_text,
+                summary_path,
+                prompt_mode=prompt_mode,
+                prompt_text=prompt_text,
+                video_title=title,
+                video_url=watch_url,
+                include_truth_assessment=not skip_truth_assessment,
+            )
+            if sum_res.ok:
+                if sum_attempt > 1:
+                    print(
+                        f"[2/3] 要約リトライ成功 ({sum_attempt}/{max_sum_attempts}) : ({PYTHON})"
+                    )
+                break
+            print(
+                f"警告: 要約失敗 ({sum_attempt}/{max_sum_attempts}) : ({PYTHON})",
+                file=sys.stderr,
+            )
+        if sum_res is None or not sum_res.ok:
             write_summary_unavailable_placeholder(
                 archive_dir, video_title=title, video_url=watch_url
             )
@@ -271,6 +327,13 @@ def run_pipeline(
         print(f"=== [終了] 成果物は {archive_dir} です。")
         print(f"=== [終了] ===")
         print(f"=== [終了] ===")
+        if sum_res is None or not sum_res.ok:
+            print(
+                f"=== [要約失敗] {max_sum_attempts} 回試行後も要約できませんでした "
+                f"（終了コード {EXIT_SUMMARY_FAIL}） : ({PYTHON}) ===",
+                file=sys.stderr,
+            )
+            return EXIT_SUMMARY_FAIL
         return 0
     finally:
         _print_pipeline_timing(started_at)

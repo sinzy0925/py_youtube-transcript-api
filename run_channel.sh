@@ -12,7 +12,7 @@
 # run_pipeline 間隔: CHANNEL_PIPELINE_GAP_SEC（秒、既定 61）。
 #   1 件のキュー処理が終わってから次を登録するまでの待機（起動同士の間隔ではない）。
 # 成果物フォルダ: output/<チャンネルスラッグ>_<公開日YYYYMMDD>_<videoid>/
-#   既に同 videoid の成果物（summary.txt 等）があればスキップ。
+#   既に同 videoid の有効な要約（summary.txt）があればスキップ。プレースホルダーは未完了扱い。
 #   videoids.txt は b01 が videoid[TAB]YYYYMMDD で書く（公開日不明時は videoid のみ可）。
 # 起動直後（外側プロセスのみ）: リポジトリ直下の *.log を削除してから処理する。
 #
@@ -30,7 +30,7 @@ usage() {
   echo "  videoids のみ: $0 '…' --fromto 0:2 --no-gopipeline" >&2
   echo "  フォアグラウンド: $0 '…' --fromto 0:2 --foreground" >&2
   echo "  間隔: CHANNEL_PIPELINE_GAP_SEC（秒、既定 61）※前件完了後→次件登録前の待機" >&2
-  echo "  出力: output/<CHANNEL_OUTPUT_SLUG>_<公開日YYYYMMDD>_<videoid>/（取得済みはスキップ）" >&2
+  echo "  出力: output/<CHANNEL_OUTPUT_SLUG>_<公開日YYYYMMDD>_<videoid>/（有効な要約がある videoid はスキップ）" >&2
   echo "  出力名: CHANNEL_OUTPUT_SLUG（省略時は URL から @handle 等を推定）" >&2
   echo "  nohup ログ: CHANNEL_LOG（既定: リポジトリ直下 channel.log）" >&2
   exit 1
@@ -393,33 +393,39 @@ _rc_wait_execute_queue_idle() {
   echo "=== 前件のキュー処理完了 ==="
 }
 
-# 既に同 videoid の成果物があればスキップ（旧 ga-ko_N 形式も含む）
+# 既に同 videoid の有効な要約があればスキップ（プレースホルダーは再実行対象）
 _rc_already_have_videoid() {
   local _vid="$1"
   "${VENV_PY}" -c "
 from pathlib import Path
-import json
 import sys
+from a04_send_result_email import is_summary_unavailable_file
+
 vid = sys.argv[1]
 root = Path(sys.argv[2])
 if not root.is_dir():
     raise SystemExit(1)
+
+def has_valid_summary(child: Path) -> bool:
+    p = child / 'summary.txt'
+    return p.is_file() and not is_summary_unavailable_file(str(p))
+
 for child in root.iterdir():
     if not child.is_dir():
         continue
     name = child.name
-    has_summary = (child / 'summary.txt').is_file()
-    has_info = (child / 'video_info.json').is_file()
     if name == vid or name.endswith('_' + vid):
-        if has_summary or has_info:
+        if has_valid_summary(child):
             print(str(child))
             raise SystemExit(0)
-    if has_info:
+    info = child / 'video_info.json'
+    if info.is_file():
         try:
-            data = json.loads((child / 'video_info.json').read_text(encoding='utf-8'))
+            import json
+            data = json.loads(info.read_text(encoding='utf-8'))
         except Exception:
             continue
-        if str(data.get('video_id') or '').strip() == vid and has_summary:
+        if str(data.get('video_id') or '').strip() == vid and has_valid_summary(child):
             print(str(child))
             raise SystemExit(0)
 raise SystemExit(1)

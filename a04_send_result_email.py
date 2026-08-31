@@ -23,12 +23,29 @@ PYTHON_NAME = os.path.basename(__file__)
 logger = logging.getLogger(__name__)
 
 # 要約 API が失敗したとき summary.txt に書き、メール本文は summary.txt の内容と同一にする
+SUMMARY_UNAVAILABLE_MARKER = "【要約の自動生成は行えませんでした】"
 SUMMARY_UNAVAILABLE_BODY = os.getenv(
     "SUMMARY_UNAVAILABLE_BODY",
-    "【要約の自動生成は行えませんでした】\n"
+    f"{SUMMARY_UNAVAILABLE_MARKER}\n"
     "（API のレート制限・一時エラー・キー不足などの可能性があります。）\n"
     "全文は添付の transcript.txt をご確認ください。",
 ).strip()
+
+
+def is_summary_unavailable_text(text: str) -> bool:
+    """要約失敗プレースホルダーか（本文またはファイル内容から判定）。"""
+    return SUMMARY_UNAVAILABLE_MARKER in (text or "")
+
+
+def is_summary_unavailable_file(path: str) -> bool:
+    """summary.txt が要約失敗プレースホルダーか。"""
+    if not path or not os.path.isfile(path):
+        return False
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return is_summary_unavailable_text(f.read())
+    except OSError:
+        return False
 
 
 def write_summary_unavailable_placeholder(

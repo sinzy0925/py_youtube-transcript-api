@@ -2,7 +2,8 @@
 # -*- coding: utf-8 -*-
 """
 a03 — ステップ2: 文字起こしを Gemini で要約し summary.txt へ（単体実行可）
-    処理順: (1) financial 要約 + reference_sources 注入 → (2) 要約文ベースの軽量真実度（検索+JSON、失敗 OK）。
+    処理順: (1) financial 要約 + reference_sources 注入 → (1b) 要約照合・修正（任意）
+        → (2) 要約文ベースの軽量真実度（検索+JSON、失敗 OK）。
     真実度: モデル最大2・リトライ1・間隔5秒・要約後30秒待機・真実度は次キーから・リトライ毎キー切替が既定。
     前: a01 で transcript.txt 作成。a02 のプロンプトを import。次: a04 メール。
     API キーは m03_api_key_manager（ローテーション・.session_data.json 永続化）を優先利用。
@@ -24,6 +25,7 @@ from a02_category_detect import (
     build_reference_prompt_block,
     detect_categories_for_summary,
 )
+from a02_summary_post_verify import post_verify_enabled, verify_and_correct_summary
 from a02_summary_prompt_shared import (
     build_prompt,
     build_truth_assessment_prompt_for_summary,
@@ -55,6 +57,16 @@ def _summary_model_chain() -> tuple[str, ...]:
         if chain:
             return chain
     return _DEFAULT_SUMMARY_MODELS
+
+
+def _verify_model_chain() -> tuple[str, ...]:
+    """要約照合用モデル列（GEMINI_VERIFY_MODELS 未設定時は要約列と同じ）。"""
+    raw = (os.getenv("GEMINI_VERIFY_MODELS") or "").strip()
+    if raw:
+        parts = tuple(m.strip() for m in raw.split(",") if m.strip())
+        if parts:
+            return parts
+    return _summary_model_chain()
 
 
 def _truth_model_chain() -> tuple[str, ...]:
@@ -563,6 +575,9 @@ def _transient_gemini_error(err: BaseException) -> bool:
 
 def _gemini_invalid_api_key_error(err: BaseException) -> bool:
     """無効・期限切れなど、別の GOOGLE_API_KEY_n が有効なら切り替えて再試行しうるエラー。"""
+    payload = _parse_gemini_error_payload(err)
+    if payload.get("code") == 401 or payload.get("status") == "UNAUTHENTICATED":
+        return True
     msg = f"{type(err).__name__}: {err}".lower()
     return any(
         part in msg
@@ -570,6 +585,8 @@ def _gemini_invalid_api_key_error(err: BaseException) -> bool:
             "api key expired",
             "api_key_invalid",
             "invalid api key",
+            "unauthenticated",
+            "401",
         )
     )
 
@@ -1116,6 +1133,22 @@ def generate_summary_to_file(
                 truth_strategy_label=None,
                 truth_model=None,
             )
+
+        if post_verify_enabled():
+            verify_models = _verify_model_chain()
+            print(
+                f"要約照合 モデル試行順: {', '.join(verify_models)} : ({PYTHON_NAME})"
+            )
+            verify_res = verify_and_correct_summary(
+                api_key,
+                verify_models,
+                transcript_text,
+                body,
+                video_title=video_title,
+                gemini_generate=_gemini_generate_loop,
+            )
+            body = verify_res.summary
+            api_key = verify_res.api_key
 
         summary_key_label = api_key_manager.format_key_log(api_key=api_key)
         print(f"要約: 使用キー {summary_key_label} : ({PYTHON_NAME})")

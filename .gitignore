@@ -1,6 +1,7 @@
 __pycache__/
 .venv/
 output/
+out*/
 .env
 .session_data.json
 *.pyc
